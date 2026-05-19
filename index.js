@@ -2,6 +2,7 @@ import express from "express";
 import "dotenv/config";
 import { supabase } from "./config/supabase.js";
 import unitRouter from "./routes/unitRoutes.js";
+import marketRouter from "./routes/marketRoutes.js";
 import { requestLogger } from "./middleware/loggerMiddleware.js";
 import { notFound } from "./middleware/notFoundMiddleware.js";
 import { errorHandler } from "./middleware/errorHandler.js";
@@ -21,6 +22,7 @@ app.get("/", (req, res) => {
 });
 
 app.use("/api/v1/units", unitRouter);
+app.use("/api/v1/market", marketRouter);
 
 // Error Middlewares
 app.use(notFound);
