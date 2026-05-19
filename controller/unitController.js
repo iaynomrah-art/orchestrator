@@ -66,7 +66,7 @@ export const pingUnits = async (req, res, next) => {
     await Promise.all(
       targetUnitIds.map(async (unitId) => {
         const channelName = `unit_${unitId}`;
-        const transactionId = crypto.randomUUID();
+        const transactionId = req.body?.transaction_id || req.body?.transactionId || crypto.randomUUID();
         const channel = supabase.channel(channelName);
 
         try {
