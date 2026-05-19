@@ -22,6 +22,29 @@ export const getAllUnits = async (req, res, next) => {
       count: units.length,
       data: units,
     });
+
+    // Update status field conditionally in the background after sending the response
+    const updatePromises = (units || []).map(async (unit) => {
+      let newStatus = null;
+      if (unit.status === "processing" || unit.status === "disabled") {
+        return; // Do not change
+      } else if (unit.status === "enabled") {
+        newStatus = "not connected";
+      } else {
+        newStatus = "enabled";
+      }
+
+      if (newStatus) {
+        await supabase
+          .from("units")
+          .update({ status: newStatus })
+          .eq("id", unit.id);
+      }
+    });
+
+    Promise.all(updatePromises).catch((err) => {
+      console.error("Error updating unit statuses in the background:", err);
+    });
   } catch (error) {
     next(error);
   }
