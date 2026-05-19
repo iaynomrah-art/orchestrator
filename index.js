@@ -2,7 +2,6 @@ import express from "express";
 import "dotenv/config";
 import { supabase } from "./config/supabase.js";
 import unitRouter from "./routes/unitRoutes.js";
-import { authenticateUser } from "./middleware/authMiddleware.js";
 import { notFound } from "./middleware/notFoundMiddleware.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 
@@ -11,9 +10,6 @@ const PORT = process.env.PORT || 3000;
 
 // Parsers
 app.use(express.json());
-
-// Global Authentication Middleware
-app.use(authenticateUser);
 
 // Routes
 app.get("/", (req, res) => {
