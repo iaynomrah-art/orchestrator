@@ -35,7 +35,6 @@ export const pingUnits = async (req, res, next) => {
   try {
     const { unitIds, unit_ids, units } = req.body || {};
     
-    // Combine possible array fields from body
     let targetUnitIds = unitIds || unit_ids || units;
 
     // If no unit IDs are provided, fetch all active units from the database

@@ -2,11 +2,15 @@ import express from "express";
 import "dotenv/config";
 import { supabase } from "./config/supabase.js";
 import unitRouter from "./routes/unitRoutes.js";
+import { requestLogger } from "./middleware/loggerMiddleware.js";
 import { notFound } from "./middleware/notFoundMiddleware.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Request Logger
+app.use(requestLogger);
 
 // Parsers
 app.use(express.json());
