@@ -1,0 +1,26 @@
+{
+  "name": "express-template",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Minimal Express API scaffold with Supabase integration, built using pnpm. Provides a clean structure for controllers, routes, models, and middleware, making it easy to extend into production-ready applications.",
+  "main": "index.js",
+  "scripts": {
+    "dev": "nodemon index.js",
+    "start": "node index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.26.1",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.1",
+    "bcrypt": "^6.0.0",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "http-status-codes": "^2.3.0",
+    "joi": "^18.0.2",
+    "jsonwebtoken": "^9.0.3",
+    "nodemon": "^3.1.11"
+  }
+}
