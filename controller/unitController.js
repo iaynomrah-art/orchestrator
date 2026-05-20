@@ -383,6 +383,65 @@ export const pairUnitsAction = async (req, res, next) => {
   }
 };
 
+/**
+ * Execute a synchronized action on a pair of units.
+ * Used for Start Immediately, Force Close, and Recover.
+ * @route POST /api/v1/units/pair/execute
+ */
+export const executePairAction = async (req, res, next) => {
+  const { unit1Id, unit2Id, p1Event, p1Payload, p2Event, p2Payload, timeoutMs = 60000, fireAndForget = false } = req.body || {};
+
+  try {
+    if (!unit1Id || !unit2Id) {
+      throw new BadRequestError("unit1Id and unit2Id are required");
+    }
+
+    if (fireAndForget) {
+      Promise.all([
+        broadcastAndWait(unit1Id, p1Event, p1Payload, 0).catch(() => {}),
+        broadcastAndWait(unit2Id, p2Event, p2Payload, 0).catch(() => {})
+      ]);
+
+      return res.status(200).json({
+        success: true,
+        message: "Action sent asynchronously"
+      });
+    }
+
+    let p1Res, p2Res;
+    try {
+      [p1Res, p2Res] = await Promise.all([
+        broadcastAndWait(unit1Id, p1Event, p1Payload, timeoutMs),
+        broadcastAndWait(unit2Id, p2Event, p2Payload, timeoutMs)
+      ]);
+    } catch (e) {
+      throw new Error(`Execution failed: ${e.message}`);
+    }
+
+    const p1Result = p1Res?.result || p1Res || {};
+    const p2Result = p2Res?.result || p2Res || {};
+
+    const p1Success = p1Result?.success !== false && p1Result?.status !== 'failed' && p1Result?.status !== 'error';
+    const p2Success = p2Result?.success !== false && p2Result?.status !== 'failed' && p2Result?.status !== 'error';
+
+    if (!p1Success) {
+      throw new Error(`Primary execution failed: ${p1Result?.reason || p1Result?.message || 'Unknown error'}`);
+    }
+    if (!p2Success) {
+      throw new Error(`Secondary execution failed: ${p2Result?.reason || p2Result?.message || 'Unknown error'}`);
+    }
+
+    res.status(200).json({
+      success: true,
+      p1Result,
+      p2Result,
+      message: "Action executed successfully"
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const pingSingleUnit = async (req, res, next) => {
   try {
     const { unit_id } = req.params;
