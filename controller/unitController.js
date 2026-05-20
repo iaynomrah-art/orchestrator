@@ -247,7 +247,7 @@ export const pairUnitsAction = async (req, res, next) => {
 
     // 1. Save to DB Immediately with status 'initializing'
     const { data: pairedRecord, error: insertError } = await supabase
-      .from('paired_accounts')
+      .from('paired_trading_accounts')
       .insert({
         primary_account_id: primary_id,
         secondary_account_id: secondary_id,
@@ -342,7 +342,7 @@ export const pairUnitsAction = async (req, res, next) => {
 
     // 5. Update pair status to 'paired'
     const { error: finalUpdateError } = await supabase
-      .from('paired_accounts')
+      .from('paired_trading_accounts')
       .update({ trade_status: 'paired' })
       .eq('id', savedPairId);
 
@@ -364,7 +364,7 @@ export const pairUnitsAction = async (req, res, next) => {
     // Rollback DB Changes
     if (savedPairId) {
       try {
-        await supabase.from('paired_accounts').delete().eq('id', savedPairId);
+        await supabase.from('paired_trading_accounts').delete().eq('id', savedPairId);
       } catch (delError) {
         console.error("Rollback delete pair failed:", delError);
       }
