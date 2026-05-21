@@ -7,6 +7,7 @@ import marketRouter from "./routes/marketRoutes.js";
 import { requestLogger } from "./middleware/loggerMiddleware.js";
 import { notFound } from "./middleware/notFoundMiddleware.js";
 import { errorHandler } from "./middleware/errorHandler.js";
+import "./cron/marginAnalyze.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
