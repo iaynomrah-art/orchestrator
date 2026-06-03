@@ -58,6 +58,37 @@ export const getMarketForecast = async (req, res, next) => {
       resistance1: microData.resistance1,
       resistance2: microData.resistance2
     });
+
+
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get market support and resistance levels for a symbol and timeframe
+ * @route GET /api/v1/market/levels
+ */
+export const getSupportResistance = async (req, res, next) => {
+  try {
+    const symbol = req.query.symbol || "XAUUSD";
+    const timeframe = req.query.timeframe || "1h";
+
+    const targetSymbol = symbol.toUpperCase();
+    const config = getExchangeConfig(targetSymbol);
+    
+    const microTfKey = timeframe.toLowerCase();
+    const microTfData = TIMEFRAME_MAP[microTfKey] || TIMEFRAME_MAP["1h"];
+
+    const microData = await fetchTechnicalData(config, microTfData);
+        
+    res.status(200).json({
+      support1: microData.support1,
+      support2: microData.support2,
+      resistance1: microData.resistance1,
+      resistance2: microData.resistance2
+    });
+
   } catch (error) {
     next(error);
   }
