@@ -65,38 +65,20 @@ export function broadcastAndWait(unitId, event, payload = {}, timeoutMs = 30000,
       console.log(`[broadcastAndWait] Channel "${channelName}" status: ${status}`);
 
       if (status === "SUBSCRIBED" || status === "joined") {
-        const supabaseUrl = process.env.PUBLIC_SUPABASE_URL;
-        const supabaseKey = process.env.SUPABASE_SERVICE_SECRET_KEY;
-
-        fetch(`${supabaseUrl}/realtime/v1/api/broadcast`, {
-          method: "POST",
-          headers: {
-            "apikey": supabaseKey,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            messages: [
-              {
-                topic: channelName,
-                event: event,
-                payload: {
-                  ...payload,
-                  transaction_id: transactionId,
-                }
-              }
-            ]
-          })
-        })
-        .then(async (res) => {
-          if (!res.ok) {
-            const txt = await res.text();
-            throw new Error(`HTTP ${res.status}: ${txt}`);
+        channel.send({
+          type: 'broadcast',
+          event: event,
+          payload: {
+            ...payload,
+            transaction_id: transactionId,
           }
-          console.log(`[broadcastAndWait] Sent "${event}" with tx: ${transactionId} via REST`);
+        })
+        .then((res) => {
+          console.log(`[broadcastAndWait] Sent "${event}" with tx: ${transactionId} via WS`);
         })
         .catch((err) => {
           cleanup();
-          reject(new Error(`Failed to send broadcast via REST: ${err.message}`));
+          reject(new Error(`Failed to send broadcast via WS: ${err.message}`));
         });
 
       } else if (status === "CHANNEL_ERROR" || status === "CLOSED") {
