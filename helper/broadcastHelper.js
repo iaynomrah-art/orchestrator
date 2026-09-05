@@ -1,5 +1,16 @@
 import { supabase } from "../config/supabase.js";
 import crypto from "crypto";
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const logFile = path.join(__dirname, '../broadcast_debug.log');
+
+const log = (msg) => {
+  // debug logs removed
+};
 
 const activeChannels = new Map();
 
@@ -11,22 +22,66 @@ export function broadcastAndWait(unitId, event, payload = {}, timeoutMs = 30000,
     const channelName = `unit_${unitId}`;
     const transactionId = payload.transaction_id || crypto.randomUUID();
     const listenEvent = expectedReplyEvent || (event === "ping" ? "pong" : "trade_result");
+    log(`[${channelName}] broadcastAndWait called for event=${event}, listenEvent=${listenEvent}, timeout=${timeoutMs}`);
 
     let channelRecord = activeChannels.get(channelName);
     let channel;
 
-    if (!channelRecord) {
+    if (!channelRecord || channelRecord.status === "CHANNEL_ERROR" || channelRecord.status === "CLOSED") {
+      if (channelRecord && channelRecord.channel) {
+        log(`[${channelName}] Removing dead channel before recreating...`);
+        supabase.removeChannel(channelRecord.channel).catch(() => {});
+        activeChannels.delete(channelName);
+      }
+
       channel = supabase.channel(channelName);
       channelRecord = {
         channel,
         status: 'init',
         pendingRequests: 0,
-        subscribers: [] // Callbacks waiting for the channel to join
+        subscribers: [], // Callbacks waiting for the channel to join
+        requests: new Map(),
+        cleanupTimeout: null
       };
       activeChannels.set(channelName, channelRecord);
+
+      const handleBroadcast = async (responsePayload) => {
+        const data = responsePayload.payload || {};
+        const eventName = responsePayload.event;
+        const txId = data.transaction_id || data.reply_to;
+        log(`[${channelName}] Incoming broadcast: eventName=${eventName}, txId=${txId}, data=${JSON.stringify(data)}`);
+
+        if (!txId) {
+            log(`[${channelName}] No txId found, skipping.`);
+            return;
+        }
+
+        const req = channelRecord.requests.get(txId);
+        if (req) {
+          const resultStatus = data.result?.status || data.status;
+          if (
+            resultStatus === "monitoring" ||
+            resultStatus === "processing" ||
+            resultStatus === "started"
+          ) {
+            log(`[${channelName}] txId matched "${txId}", Intermediate status "${resultStatus}" — waiting`);
+            return;
+          }
+
+          log(`[${channelName}] txId matched "${txId}", finishing...`);
+          req.resolve(data);
+          req.cleanup();
+        } else {
+          log(`[${channelName}] txId "${txId}" NOT FOUND in requests map! Current keys: ${Array.from(channelRecord.requests.keys()).join(', ')}`);
+        }
+      };
+
+      // Register specific listeners BEFORE subscribing
+      channel.on("broadcast", { event: "pong" }, handleBroadcast);
+      channel.on("broadcast", { event: "trade_result" }, handleBroadcast);
+      channel.on("broadcast", { event: "status_update" }, handleBroadcast);
       
       channel.subscribe((status) => {
-        console.log(`[broadcastAndWait] Channel "${channelName}" status: ${status} (Retry: ${retryCount})`);
         channelRecord.status = status;
         
         if (status === "SUBSCRIBED" || status === "joined") {
@@ -39,12 +94,17 @@ export function broadcastAndWait(unitId, event, payload = {}, timeoutMs = 30000,
           channelRecord.subscribers = [];
           
           if (activeChannels.get(channelName) === channelRecord) {
-            activeChannels.delete(channelName);
+             // Don't auto-delete here, let the next broadcastAndWait clean it up
+             // so we don't accidentally leave dangling references.
           }
         }
       });
     } else {
       channel = channelRecord.channel;
+      if (channelRecord.cleanupTimeout) {
+        clearTimeout(channelRecord.cleanupTimeout);
+        channelRecord.cleanupTimeout = null;
+      }
     }
 
     channelRecord.pendingRequests++;
@@ -56,51 +116,35 @@ export function broadcastAndWait(unitId, event, payload = {}, timeoutMs = 30000,
       isCleaningUp = true;
       if (timeoutId) clearTimeout(timeoutId);
       
+      log(`[${channelName}] cleanup for txId=${transactionId}`);
+      channelRecord.requests.delete(transactionId);
       channelRecord.pendingRequests--;
       if (channelRecord.pendingRequests <= 0) {
-        if (activeChannels.get(channelName) === channelRecord) {
-          activeChannels.delete(channelName);
-        }
-        await supabase.removeChannel(channel);
+        channelRecord.cleanupTimeout = setTimeout(async () => {
+          if (channelRecord.pendingRequests <= 0) {
+            if (activeChannels.get(channelName) === channelRecord) {
+              activeChannels.delete(channelName);
+            }
+            await supabase.removeChannel(channel);
+          }
+        }, 15000); // Wait 15s before closing to avoid Phoenix leave/join race conditions
       }
     };
 
     if (timeoutMs > 0) {
       timeoutId = setTimeout(async () => {
+        log(`[${channelName}] TIMEOUT for txId=${transactionId}, event=${event}`);
         await cleanup();
         reject(new Error(`Timeout: No response from unit ${unitId} within ${timeoutMs / 1000}s on event '${event}'`));
       }, timeoutMs);
     }
 
-    // Register our specific listener
-    const onBroadcast = async (responsePayload) => {
-      const data = responsePayload.payload || {};
-      const txId = data.transaction_id || data.reply_to;
-
-      if (txId && txId !== transactionId) {
-        return; // Not ours
-      }
-
-      const resultStatus = data.result?.status || data.status;
-      if (
-        resultStatus === "monitoring" ||
-        resultStatus === "processing" ||
-        resultStatus === "started"
-      ) {
-        console.log(`[broadcastAndWait] Intermediate status "${resultStatus}" — waiting`);
-        return;
-      }
-
-      console.log(`[broadcastAndWait] txId matched "${transactionId}", finishing...`);
-      channel.off("broadcast", { event: listenEvent }, onBroadcast);
-      resolve(data);
-      cleanup();
-    };
-
-    channel.on("broadcast", { event: listenEvent }, onBroadcast);
+    // Register request
+    channelRecord.requests.set(transactionId, { resolve, cleanup });
 
     // Send the message once subscribed
     const sendMessage = () => {
+      log(`[${channelName}] sendMessage: event=${event}, txId=${transactionId}`);
       channel.send({
         type: 'broadcast',
         event: event,
@@ -109,10 +153,11 @@ export function broadcastAndWait(unitId, event, payload = {}, timeoutMs = 30000,
           transaction_id: transactionId,
         }
       })
-      .then(() => {
-        console.log(`[broadcastAndWait] Sent "${event}" with tx: ${transactionId} via WS`);
+      .then((resp) => {
+        log(`[${channelName}] sendMessage success resp=${resp}`);
       })
       .catch((err) => {
+        log(`[${channelName}] sendMessage failed err=${err}`);
         cleanup();
         reject(new Error(`Failed to send broadcast via WS: ${err.message}`));
       });
@@ -123,7 +168,6 @@ export function broadcastAndWait(unitId, event, payload = {}, timeoutMs = 30000,
     } else if (channelRecord.status === "CHANNEL_ERROR" || channelRecord.status === "CLOSED") {
       cleanup();
       if (retryCount < 2) {
-          console.log(`[broadcastAndWait] Retrying connection for ${unitId}...`);
           setTimeout(() => {
               broadcastAndWait(unitId, event, payload, timeoutMs, expectedReplyEvent, retryCount + 1)
                   .then(resolve)
@@ -137,7 +181,6 @@ export function broadcastAndWait(unitId, event, payload = {}, timeoutMs = 30000,
         if (err) {
           cleanup();
           if (retryCount < 2) {
-              console.log(`[broadcastAndWait] Retrying connection for ${unitId} after callback error...`);
               setTimeout(() => {
                   broadcastAndWait(unitId, event, payload, timeoutMs, expectedReplyEvent, retryCount + 1)
                       .then(resolve)

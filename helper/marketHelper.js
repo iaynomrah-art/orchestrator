@@ -67,8 +67,6 @@ export const getExchangeConfig = (symbol) => {
 export const fetchTechnicalData = async (config, tfData) => {
   const suffix = tfData.tv_suffix;
   const url = `https://scanner.tradingview.com/${config.screener}/scan`;
-
-  console.log(url);
   
   const columns = [
     `Recommend.All${suffix}`,

@@ -324,7 +324,26 @@ export const pairUnitsAction = async (req, res, next) => {
         broadcastAndWait(unit2Id, p2Event, p2Payload, 60000)
       ]);
     } catch (e) {
-      throw new Error(`Stage orders failed: ${e.message}`);
+      if (e.message.includes("Timeout")) {
+        const { data: checkPair, error: checkErr } = await supabase
+          .from('paired_trading_accounts')
+          .select('trade_status, primary_automation_status, secondary_automation_status')
+          .eq('id', savedPairId)
+          .single();
+          
+        if (!checkErr && checkPair) {
+          if (checkPair.primary_automation_status === 'success' && checkPair.secondary_automation_status === 'success') {
+            p1Res = { result: { success: true, status: 'success', message: 'Resolved via DB fallback' } };
+            p2Res = { result: { success: true, status: 'success', message: 'Resolved via DB fallback' } };
+          } else {
+            throw new Error(`Stage orders failed (Timeout & DB fallback unsuccessful): ${e.message}`);
+          }
+        } else {
+          throw new Error(`Stage orders failed: ${e.message}`);
+        }
+      } else {
+        throw new Error(`Stage orders failed: ${e.message}`);
+      }
     }
 
     const p1Result = p1Res?.result || p1Res || {};
@@ -415,7 +434,31 @@ export const executePairAction = async (req, res, next) => {
         broadcastAndWait(unit2Id, p2Event, p2Payload, timeoutMs)
       ]);
     } catch (e) {
-      throw new Error(`Execution failed: ${e.message}`);
+      if (e.message.includes("Timeout")) {
+        const dbAccountId1 = p1Payload?.db_account_id;
+        const dbAccountId2 = p2Payload?.db_account_id;
+        
+        let p1SuccessDB = false;
+        let p2SuccessDB = false;
+        
+        if (dbAccountId1) {
+            const { data } = await supabase.from('paired_trading_accounts').select('primary_automation_status').eq('primary_account_id', dbAccountId1).single();
+            if (data?.primary_automation_status === 'success') p1SuccessDB = true;
+        }
+        if (dbAccountId2) {
+            const { data } = await supabase.from('paired_trading_accounts').select('secondary_automation_status').eq('secondary_account_id', dbAccountId2).single();
+            if (data?.secondary_automation_status === 'success') p2SuccessDB = true;
+        }
+
+        if (p1SuccessDB && p2SuccessDB) {
+           p1Res = { result: { success: true, status: 'success', message: 'Resolved via DB fallback' } };
+           p2Res = { result: { success: true, status: 'success', message: 'Resolved via DB fallback' } };
+        } else {
+           throw new Error(`Execution failed (Timeout & DB fallback unsuccessful): ${e.message}`);
+        }
+      } else {
+        throw new Error(`Execution failed: ${e.message}`);
+      }
     }
 
     const p1Result = p1Res?.result || p1Res || {};

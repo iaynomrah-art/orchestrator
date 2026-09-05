@@ -8,6 +8,7 @@ import { requestLogger } from "./middleware/loggerMiddleware.js";
 import { notFound } from "./middleware/notFoundMiddleware.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import "./cron/marginAnalyze.js";
+import "./cron/funderDailyReset.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
