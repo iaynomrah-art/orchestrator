@@ -23,6 +23,7 @@ const allowedOrigins = [
 ];
 
 if (process.env.NODE_ENV === "development") {
+  // Allow any localhost origin in development
   allowedOrigins.push("http://localhost:3000", "http://127.0.0.1:3000");
 }
 
@@ -35,7 +36,10 @@ app.use(
       const normalizedOrigin = origin.replace(/\/$/, "");
       if (allowedOrigins.includes(normalizedOrigin)) {
         callback(null, true);
+      } else if (process.env.NODE_ENV === "development" && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(normalizedOrigin)) {
+        callback(null, true);
       } else {
+        console.warn(`Origin blocked by CORS: ${origin}`);
         callback(new Error("Not allowed by CORS"));
       }
     },
