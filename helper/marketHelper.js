@@ -27,7 +27,7 @@ export const MACRO_PAIRINGS = {
   "1d": "1M"
 };
 
-// Fetch headlines from forexlive RSS
+// Fetch headlines from forexlive RSS. Returns an array of strings (empty when none).
 export const getLatestHeadlines = async () => {
   try {
     const feed = await rssParser.parseURL("https://www.forexlive.com/feed/news");
@@ -41,13 +41,9 @@ export const getLatestHeadlines = async () => {
       headlinesWithTime.push(`[${publishedTime}] ${title}`);
     }
     
-    if (headlinesWithTime.length === 0) {
-      return "No significant news data available.";
-    }
-    
-    return headlinesWithTime.join(" | ");
+    return headlinesWithTime;
   } catch (error) {
-    return "No significant news data available.";
+    return [];
   }
 };
 
@@ -157,7 +153,17 @@ export const fetchTechnicalData = async (config, tfData) => {
   };
 };
 
-// Ask Ollama local LLM for forecast validation
+// Ollama server: a base URL (e.g. your Ollama domain) or the full /api/generate endpoint
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "qwen2.5:3b";
+const getOllamaGenerateUrl = () => {
+  const base = (process.env.OLLAMA_URL || "http://localhost:11434").replace(/\/+$/, "");
+  return base.endsWith("/api/generate") ? base : `${base}/api/generate`;
+};
+
+// Ask Ollama LLM for forecast validation.
+// Returns source "ai" when the verdict and reasoning come from the model, or
+// "technicals_fallback" when the model was unavailable or gave no valid verdict —
+// the reasoning then says so instead of showing model text that doesn't match.
 export const askOllama = async (symbol, microTf, macroTf, microData, macroData, headlines, currentUtcTime) => {
   const currentPrice = microData.price;
   const atr = microData.atr;
@@ -177,6 +183,9 @@ ATR (Volatility): ${atr}
 [1] MACRO TREND (${macroTf}): ${macroData.decision}
 [2] MICRO TREND (${microTf}): ${microData.decision}
 
+LATEST HEADLINES:
+${(headlines && headlines.length ? headlines : ["(none available)"]).map((h) => `- ${h}`).join("\n")}
+
 DECISION LOGIC (Execute strictly for short-term ${microTf} horizon):
 1. TREND ALIGNMENT: Prioritize the Micro Trend (${microTf}) if the current price is above the 200 SMA (for BUY) or below the 200 SMA (for SELL). 
 2. RISK/REWARD SELECTION: 
@@ -195,24 +204,48 @@ Respond strictly in JSON format matching this exact schema. Do not output markdo
 }
 `;
 
-  const url = process.env.OLLAMA_URL || "http://localhost:11434/api/generate";
   const payload = {
-    model: "gemma3:4b",
+    model: OLLAMA_MODEL,
     prompt: systemPrompt,
     stream: false,
     format: "json",
-    options: { temperature: 0.0, num_thread: 4 }
+    // Keep the model loaded between signal requests so we don't pay the ~6-8s reload each time
+    keep_alive: process.env.OLLAMA_KEEP_ALIVE || "30m",
+    options: { temperature: 0.0, num_thread: Number(process.env.OLLAMA_NUM_THREAD) || 6 }
+  };
+
+  const fallback = (why) => {
+    const fallbackVerdict = microData.decision;
+    return {
+      verdict: fallbackVerdict,
+      entry_price: currentPrice,
+      target_price: fallbackVerdict === "BUY" ? buyTarget : sellTarget,
+      stop_loss: fallbackVerdict === "BUY" ? buyStop : sellStop,
+      confidence_score: null,
+      reasoning: `${why} Direction taken from the ${microTf} technical indicators (${microData.process})`,
+      source: "technicals_fallback",
+      model: null,
+    };
   };
 
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 60000);
 
-    const response = await fetch(url, {
+    const headers = { "Content-Type": "application/json" };
+    // OLLAMA_AUTH is a full Authorization header value (e.g. "Basic <base64>" for Traefik basicauth)
+    if (process.env.OLLAMA_AUTH) {
+      headers.Authorization = process.env.OLLAMA_AUTH;
+    } else if (process.env.OLLAMA_USERNAME && process.env.OLLAMA_PASSWORD) {
+      const creds = Buffer.from(`${process.env.OLLAMA_USERNAME}:${process.env.OLLAMA_PASSWORD}`).toString("base64");
+      headers.Authorization = `Basic ${creds}`;
+    } else if (process.env.OLLAMA_API_KEY) {
+      headers.Authorization = `Bearer ${process.env.OLLAMA_API_KEY}`;
+    }
+
+    const response = await fetch(getOllamaGenerateUrl(), {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
+      headers,
       body: JSON.stringify(payload),
       signal: controller.signal
     });
@@ -220,28 +253,29 @@ Respond strictly in JSON format matching this exact schema. Do not output markdo
     clearTimeout(timeoutId);
 
     if (!response.ok) {
-      throw new Error(`Ollama HTTP error: ${response.statusText}`);
+      throw new Error(`Ollama HTTP error: ${response.status} ${response.statusText}`);
     }
 
     const data = await response.json();
     const rawResponse = data.response || "{}";
     const aiData = JSON.parse(rawResponse);
 
-    if (!aiData.verdict || (aiData.verdict.trim().toUpperCase() !== "BUY" && aiData.verdict.trim().toUpperCase() !== "SELL")) {
-      aiData.verdict = microData.decision;
+    const verdict = String(aiData.verdict || "").trim().toUpperCase();
+    if (verdict !== "BUY" && verdict !== "SELL") {
+      // The model's reasoning doesn't back the direction we'd fall back to, so don't keep it
+      return fallback("The AI model returned no valid verdict.");
     }
 
-    return aiData;
+    return {
+      ...aiData,
+      verdict,
+      confidence_score: Number.isFinite(Number(aiData.confidence_score)) ? Number(aiData.confidence_score) : null,
+      reasoning: typeof aiData.reasoning === "string" ? aiData.reasoning.trim().slice(0, 1000) : null,
+      source: "ai",
+      model: OLLAMA_MODEL,
+    };
   } catch (error) {
     console.error(`Ollama error: ${error.message}`);
-    const fallbackVerdict = microData.decision;
-    return {
-      verdict: fallbackVerdict,
-      entry_price: currentPrice,
-      target_price: fallbackVerdict === "BUY" ? buyTarget : sellTarget,
-      stop_loss: fallbackVerdict === "BUY" ? buyStop : sellStop,
-      confidence_score: 50,
-      reasoning: "AI offline. Defaulting to standard technicals."
-    };
+    return fallback("The AI model was unavailable.");
   }
 };
