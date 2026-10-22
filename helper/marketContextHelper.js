@@ -73,6 +73,50 @@ export const isRollover = (date = new Date()) => {
   return hour === 16 || hour === 17;
 };
 
+/**
+ * Support (lowest low) and resistance (highest high) of the recorded 1-minute
+ * candles over the last `hours`, or null when too few minutes were recorded.
+ */
+export const getRecentRange = async (symbol, hours, now = new Date()) => {
+  const from = new Date(now.getTime() - hours * 3600 * 1000);
+  const base = () => supabase.from("market_candles").select("high, low").eq("symbol", symbol)
+    .gte("minute", from.toISOString()).lt("minute", now.toISOString());
+  const [top, bottom, count] = await Promise.all([
+    base().order("high", { ascending: false }).limit(1).maybeSingle(),
+    base().order("low", { ascending: true }).limit(1).maybeSingle(),
+    supabase.from("market_candles").select("minute", { count: "exact", head: true }).eq("symbol", symbol)
+      .gte("minute", from.toISOString()).lt("minute", now.toISOString()),
+  ]);
+  if (top.error || bottom.error || !top.data || !bottom.data) return null;
+  let open = 0;
+  for (let t = from.getTime(); t < now.getTime(); t += 60000) if (goldMarketOpen(new Date(t))) open++;
+  const coverage = open ? (count.count ?? 0) / open : 0;
+  if (coverage < 0.8) return null;
+  const support = Number(bottom.data.low), resistance = Number(top.data.high);
+  return { support, resistance, range: Math.round((resistance - support) * 100) / 100, coverage: Math.round(coverage * 100) / 100 };
+};
+
+/**
+ * Support/resistance checks for the delayed hedge, saved with each signal and
+ * graded with it — tracked only, not part of the score:
+ *   sl_gt_range     the SL distance is wider than the support-resistance range
+ *   trigger_beyond  the hedge trigger (10% of the SL against the trade) sits
+ *                   below support for a buy / above resistance for a sell
+ */
+export const getSupportResistanceChecks = async (symbol, entry, direction, slDistance) => {
+  const s = direction === "buy" ? 1 : -1;
+  const trigger = entry - s * 0.1 * slDistance;
+  const out = { entry, sl_distance: Math.round(slDistance * 100) / 100, trigger_price: Math.round(trigger * 100) / 100, checks: {} };
+  for (const hours of [8, 24]) {
+    const r = await getRecentRange(symbol, hours).catch(() => null);
+    out[`h${hours}`] = r;
+    if (!r) continue;
+    out.checks[`sl_gt_range_${hours}h`] = slDistance > r.range;
+    out.checks[`trigger_beyond_${hours}h`] = s === 1 ? trigger < r.support : trigger > r.resistance;
+  }
+  return out;
+};
+
 export const getMarketContext = async (symbol, now = new Date()) => {
   const [volatility, news] = await Promise.all([
     getVolatility(symbol).catch(() => null),

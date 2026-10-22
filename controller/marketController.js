@@ -137,7 +137,7 @@ export const getShadowResults = async (req, res, next) => {
     for (let from = 0; ; from += 1000) {
       let query = supabase
         .from("market_signals")
-        .select("created_at, shadow, direction, tv_direction, coin_direction, confidence, score_v2, grade")
+        .select("created_at, shadow, direction, tv_direction, coin_direction, confidence, score_v2, grade, sr:inputs->support_resistance")
         .not("graded_at", "is", null)
         .gte("created_at", since)
         .order("created_at")

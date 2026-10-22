@@ -72,11 +72,26 @@ export const summarizeGrades = (rows, setting = "t10_tp1", scoreVersion = "v1") 
   const rewardRisk = rewardRiskN ? rewardRiskSum / rewardRiskN : 1;
   const luck = Math.round((trigger / (rewardRisk + trigger)) * 1000) / 10;
 
+  // Tracked support/resistance checks (r.sr.checks): the AI's results when each passed vs not
+  const checks = {};
+  for (const r of graded) {
+    const g = r.grade.results.ai?.[setting];
+    if (!g || !r.sr?.checks) continue;
+    for (const [key, passed] of Object.entries(r.sr.checks)) {
+      checks[key] ??= { passed: emptyTally(), failed: emptyTally() };
+      const tally = checks[key][passed ? "passed" : "failed"];
+      tally.graded++;
+      tally[g.story.toLowerCase()]++;
+      if (g.story !== "X") tally.resolved++;
+    }
+  }
+
   return {
     setting,
     score_version: scoreVersion,
     luck_a_rate: luck,
     signals: graded.length,
+    checks: Object.fromEntries(Object.entries(checks).map(([k, v]) => [k, { passed: finish(v.passed), failed: finish(v.failed) }])),
     overall: Object.fromEntries(SOURCES.map((s) => [s, finish(overall[s])])),
     buckets: buckets.map((b) => ({ label: b.label, sources: Object.fromEntries(SOURCES.map((s) => [s, finish(b.sources[s])])) })),
   };

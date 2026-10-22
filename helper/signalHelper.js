@@ -11,7 +11,7 @@ import {
   TIMEFRAME_MAP,
   MACRO_PAIRINGS,
 } from "./marketHelper.js";
-import { getMarketContext, describeContext } from "./marketContextHelper.js";
+import { getMarketContext, describeContext, getSupportResistanceChecks } from "./marketContextHelper.js";
 
 // Real signal requests in progress: the shadow job skips its turn while one runs,
 // so it never makes a user wait on the single Ollama CPU slot.
@@ -66,6 +66,9 @@ export const generateSignal = async ({ symbol = "XAUUSD", timeframe = "1h", shad
     const { score, breakdown } = scoreSignal(finalAction, microData, macroData, aiResponse.news_impact);
     const slDistance = Math.abs(Number(microData.price) - Number(aiResponse.stop_loss));
     const v2 = scoreSignalV2(finalAction, microData, macroData, aiResponse.news_impact, { ...context, slDistance });
+    // Tracked only (not in the score): graded later to see if these levels avoid the hedge trigger
+    const supportResistance = await getSupportResistanceChecks(targetSymbol, Number(microData.price), finalAction.toLowerCase(), slDistance)
+      .catch(() => null);
 
     // Record exactly what was suggested and why, at the moment it was generated.
     // Pairing links a trade to this record by id, so the explanation shown later
@@ -105,6 +108,7 @@ export const generateSignal = async ({ symbol = "XAUUSD", timeframe = "1h", shad
         volatility: context.volatility,
         news_ahead: context.news,
         hedge_block: v2.blocks,
+        support_resistance: supportResistance,
       },
     };
 
