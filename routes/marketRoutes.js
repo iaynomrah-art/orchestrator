@@ -1,5 +1,5 @@
 import express from "express";
-import { getMarketForecast, getSupportResistance, getCurrentPrice, getShadowResults, getSizingVolatility, getShadowStatus } from "../controller/marketController.js";
+import { getMarketForecast, getSupportResistance, getCurrentPrice, getShadowResults, getSizingVolatility, getShadowStatus, getChartCandles } from "../controller/marketController.js";
 
 const router = express.Router();
 
@@ -11,5 +11,6 @@ router.get("/price", getCurrentPrice);
 router.get("/shadow-results", getShadowResults);
 router.get("/volatility", getSizingVolatility);
 router.get("/shadow-status", getShadowStatus);
+router.get("/candles", getChartCandles);
 
 export default router;

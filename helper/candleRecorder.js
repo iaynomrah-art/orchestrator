@@ -33,3 +33,21 @@ export const recordPrice = (symbol, price, now = Date.now()) => {
   if (c) save(symbol, c).catch(() => {});
   current[symbol] = { minute, open: price, high: price, low: price, close: price, ticks: 1 };
 };
+
+/** Recorded 1-minute candles between two times (ms), oldest first. */
+export const loadCandles = async (symbol, fromMs, toMs) => {
+  const rows = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await supabase.from("market_candles")
+      .select("minute, open, high, low, close")
+      .eq("symbol", symbol)
+      .gte("minute", new Date(fromMs).toISOString())
+      .lt("minute", new Date(toMs).toISOString())
+      .order("minute")
+      .range(from, from + 999);
+    if (error) throw new Error(error.message);
+    rows.push(...data);
+    if (data.length < 1000) break;
+  }
+  return rows.map((r) => ({ minute: new Date(r.minute).getTime(), open: Number(r.open), high: Number(r.high), low: Number(r.low), close: Number(r.close) }));
+};

@@ -12,6 +12,7 @@ import "./cron/funderDailyReset.js";
 import "./cron/priceStreamer.js";
 import "./cron/shadowSignals.js";
 import "./cron/gradeSignals.js";
+import "./cron/volatilityPublisher.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;

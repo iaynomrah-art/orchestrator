@@ -8,6 +8,7 @@ import {
 import { generateSignal } from "../helper/signalHelper.js";
 import { summarizeGrades } from "../helper/shadowResultsHelper.js";
 import { getVolatility } from "../helper/marketContextHelper.js";
+import { loadCandles } from "../helper/candleRecorder.js";
 
 /**
  * Get market signal forecast for a symbol and timeframe
@@ -116,6 +117,49 @@ export const getShadowStatus = async (req, res, next) => {
         outcome: { ai: outcome(s.grade, "ai"), tv: outcome(s.grade, "tv"), coin: outcome(s.grade, "coin") },
       })),
       replay,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Recorded gold candles for the monitor chart (grouped to `tf` minutes), plus the
+ * shadow signals in that window with their entry, SL, TP and outcome.
+ * @route GET /api/v1/market/candles?hours=12&tf=5
+ */
+export const getChartCandles = async (req, res, next) => {
+  try {
+    const hours = Math.min(Math.max(Number(req.query.hours) || 12, 1), 48);
+    const tf = [1, 5, 15].includes(Number(req.query.tf)) ? Number(req.query.tf) : 5;
+    const now = Date.now();
+    const from = now - hours * 3600 * 1000;
+    const [rows, signals] = await Promise.all([
+      loadCandles("XAUUSD", from, now),
+      supabase.from("market_signals")
+        .select("id, created_at, direction, confidence, entry_price, stop_price, target_price, grade")
+        .eq("shadow", true).gte("created_at", new Date(from).toISOString()).order("created_at"),
+    ]);
+    if (signals.error) throw new BadRequestError(signals.error.message);
+
+    const bars = [];
+    for (const c of rows) {
+      const t = Math.floor(c.minute / (tf * 60000)) * tf * 60;   // bar start, epoch seconds
+      const last = bars[bars.length - 1];
+      if (last && last.time === t) {
+        last.high = Math.max(last.high, c.high); last.low = Math.min(last.low, c.low); last.close = c.close;
+      } else {
+        bars.push({ time: t, open: c.open, high: c.high, low: c.low, close: c.close });
+      }
+    }
+    res.status(200).json({
+      symbol: "XAUUSD", tf, hours,
+      candles: bars,
+      signals: signals.data.map((s) => ({
+        id: s.id, time: Math.floor(new Date(s.created_at).getTime() / 1000), direction: s.direction, score: s.confidence,
+        entry: s.entry_price, stop: s.stop_price, target: s.target_price,
+        outcome: s.grade?.results?.ai?.t10_tp1?.story ?? null,
+      })),
     });
   } catch (error) {
     next(error);
