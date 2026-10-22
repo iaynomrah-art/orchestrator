@@ -1,13 +1,13 @@
 import { BadRequestError } from "../errors/index.js";
 import { supabase } from "../config/supabase.js";
-import { 
-  getExchangeConfig, 
-  fetchTechnicalData, 
-  getLatestHeadlines, 
-  askOllama, 
-  TIMEFRAME_MAP, 
-  MACRO_PAIRINGS 
+import {
+  getExchangeConfig,
+  fetchTechnicalData,
+  TIMEFRAME_MAP,
 } from "../helper/marketHelper.js";
+import { generateSignal } from "../helper/signalHelper.js";
+import { summarizeGrades } from "../helper/shadowResultsHelper.js";
+import { getVolatility } from "../helper/marketContextHelper.js";
 
 /**
  * Get market signal forecast for a symbol and timeframe
@@ -15,95 +15,141 @@ import {
  */
 export const getMarketForecast = async (req, res, next) => {
   try {
-    const symbol = req.query.symbol || "XAUUSD";
-    const timeframe = req.query.timeframe || "1h";
+    const { response } = await generateSignal({
+      symbol: req.query.symbol || "XAUUSD",
+      timeframe: req.query.timeframe || "1h",
+    });
+    res.status(200).json(response);
+  } catch (error) {
+    next(error);
+  }
+};
 
-    const targetSymbol = symbol.toUpperCase();
-    const config = getExchangeConfig(targetSymbol);
-    
-    const microTfKey = timeframe.toLowerCase();
-    const macroTfKey = MACRO_PAIRINGS[microTfKey] || "1d"; 
-    
-    const microTfData = TIMEFRAME_MAP[microTfKey] || TIMEFRAME_MAP["1h"];
-    const macroTfData = TIMEFRAME_MAP[macroTfKey] || TIMEFRAME_MAP["1d"];
-
-    const microData = await fetchTechnicalData(config, microTfData);
-    const macroData = await fetchTechnicalData(config, macroTfData);
-
-    const headlines = await getLatestHeadlines();
-    const currentUtcTime = new Date().toUTCString();
-
-    const aiResponse = await askOllama(
-      targetSymbol, 
-      microTfData.text, 
-      macroTfData.text, 
-      microData, 
-      macroData, 
-      headlines,
-      currentUtcTime
-    );
-    
-    // askOllama always returns BUY or SELL (falling back to the technicals itself)
-    const finalAction = aiResponse.verdict;
-
-    // Record exactly what was suggested and why, at the moment it was generated.
-    // Pairing links a trade to this record by id, so the explanation shown later
-    // is always the model's own output, never text typed in afterwards.
-    const signalRecord = {
+/**
+ * SL distance for a ~4-8h trade, for sizing lots (lots = SL $ / (distance x contract)).
+ * From the MT5 volatility numbers when fresh, else 1.5x the 1h ATR (the AI's own stop).
+ * No AI call, so it's instant.
+ * @route GET /api/v1/market/volatility?symbol=XAUUSD
+ */
+export const getSizingVolatility = async (req, res, next) => {
+  try {
+    const targetSymbol = (req.query.symbol || "XAUUSD").toUpperCase();
+    const vol = await getVolatility(targetSymbol);
+    if (vol?.suggested_sl_distance) {
+      return res.status(200).json({
+        symbol: targetSymbol,
+        source: "mt5",
+        sl_distance: Number(vol.suggested_sl_distance),
+        forecast_6h: Number(vol.forecast_6h),
+        computed_at: vol.computed_at,
+      });
+    }
+    const microData = await fetchTechnicalData(getExchangeConfig(targetSymbol), TIMEFRAME_MAP["1h"]);
+    res.status(200).json({
       symbol: targetSymbol,
-      direction: finalAction.toLowerCase(),
-      reasoning: aiResponse.reasoning || null,
-      confidence: aiResponse.confidence_score ?? null,
-      entry_price: microData.price,
-      target_price: aiResponse.target_price ?? null,
-      stop_price: aiResponse.stop_loss ?? null,
-      source: aiResponse.source,
-      model: aiResponse.model,
-      inputs: {
-        price: microData.price,
-        sma_200: microData.sma_200,
-        atr: microData.atr,
-        rsi: microData.raw_rsi,
-        micro_timeframe: microTfData.text,
-        micro_trend: microData.decision,
-        macro_timeframe: macroTfData.text,
-        macro_trend: macroData.decision,
-        indicator_summary: microData.process,
-        technical_basis: microData.basis,
-        headlines,
-      },
-    };
+      source: "atr",
+      sl_distance: Math.round(1.5 * microData.atr * 100) / 100,
+      forecast_6h: null,
+      computed_at: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
 
-    let signalId = null;
-    const { data: savedSignal, error: signalError } = await supabase
-      .from("market_signals")
-      .insert(signalRecord)
-      .select("id, created_at")
-      .single();
-    if (signalError) {
-      // The suggestion still works; it just can't be linked to a trade for its explanation
-      console.error("[market] Failed to record signal:", signalError.message);
-    } else {
-      signalId = savedSignal.id;
+/**
+ * Everything the Prediction Monitor page shows, in one call: whether shadow mode
+ * runs, price recording and volatility freshness, the latest signals with their
+ * outcomes, and the historical replay summary (data/replay_150.jsonl) if present.
+ * @route GET /api/v1/market/shadow-status
+ */
+export const getShadowStatus = async (req, res, next) => {
+  try {
+    const now = new Date();
+    const hourAgo = new Date(now.getTime() - 3600 * 1000).toISOString();
+    const [vol, lastCandle, candlesHour, signals, totals, graded] = await Promise.all([
+      supabase.from("market_volatility").select("computed_at, forecast_6h, ratio_now, source").eq("symbol", "XAUUSD").maybeSingle(),
+      supabase.from("market_candles").select("minute, close, ticks").eq("symbol", "XAUUSD").order("minute", { ascending: false }).limit(1).maybeSingle(),
+      supabase.from("market_candles").select("minute", { count: "exact", head: true }).eq("symbol", "XAUUSD").gte("minute", hourAgo),
+      supabase.from("market_signals")
+        .select("id, created_at, shadow, direction, tv_direction, coin_direction, confidence, score_v2, entry_price, graded_at, grade")
+        .order("created_at", { ascending: false }).limit(25),
+      supabase.from("market_signals").select("id", { count: "exact", head: true }).eq("shadow", true),
+      supabase.from("market_signals").select("id", { count: "exact", head: true }).eq("shadow", true).not("graded_at", "is", null),
+    ]);
+
+    const outcome = (g, src) => g?.results?.[src]?.t10_tp1?.story ?? null;
+    const nextRun = new Date(now);
+    nextRun.setUTCMinutes(5, 0, 0);
+    if (nextRun <= now) nextRun.setUTCHours(nextRun.getUTCHours() + 1);
+
+    let replay = null;
+    try {
+      const fs = await import("fs");
+      const path = new URL("../data/replay_150.jsonl", import.meta.url);
+      if (fs.existsSync(path)) {
+        const rows = fs.readFileSync(path, "utf8").trim().split(/\n/).filter(Boolean).map((l) => JSON.parse(l));
+        const pick = (s) => ({ ai: s.overall.ai.a_rate, tv: s.overall.tv.a_rate, coin: s.overall.coin.a_rate, luck: s.luck_a_rate, resolved: s.overall.ai.resolved });
+        replay = {
+          signals: rows.length,
+          agree_pct: Math.round((rows.filter((r) => r.direction === r.tv_direction).length / rows.length) * 100),
+          t10: pick(summarizeGrades(rows, "t10_tp1")),
+          t15: pick(summarizeGrades(rows, "t15_tp1")),
+          from: rows[0]?.created_at, to: rows[rows.length - 1]?.created_at,
+        };
+      }
+    } catch (error) {
+      console.warn(`[market] Replay summary unavailable: ${error.message}`);
     }
 
     res.status(200).json({
-      action: finalAction,
-      target: aiResponse.target_price,
-      stop: aiResponse.stop_loss,
-      support1: microData.support1,
-      support2: microData.support2,
-      resistance1: microData.resistance1,
-      resistance2: microData.resistance2,
-      signal_id: signalId,
-      reasoning: signalRecord.reasoning,
-      confidence: signalRecord.confidence,
-      source: signalRecord.source,
-      model: signalRecord.model,
-      generated_at: savedSignal?.created_at ?? new Date().toISOString(),
+      now: now.toISOString(),
+      shadow_enabled: process.env.SHADOW_SIGNALS_ENABLED === "true",
+      next_shadow_run: nextRun.toISOString(),
+      volatility: vol.data ?? null,
+      candles: { last: lastCandle.data ?? null, last_hour: candlesHour.count ?? 0 },
+      counts: { shadow: totals.count ?? 0, graded: graded.count ?? 0 },
+      signals: (signals.data || []).map((s) => ({
+        id: s.id, created_at: s.created_at, shadow: s.shadow, entry_price: s.entry_price,
+        ai: s.direction, tv: s.tv_direction, coin: s.coin_direction, score: s.confidence, score_v2: s.score_v2,
+        graded_at: s.graded_at, skipped: s.grade?.skipped ?? null,
+        outcome: { ai: outcome(s.grade, "ai"), tv: outcome(s.grade, "tv"), coin: outcome(s.grade, "coin") },
+      })),
+      replay,
     });
+  } catch (error) {
+    next(error);
+  }
+};
 
+/**
+ * How graded signals did, per score range: AI vs TradingView rating vs coin flip
+ * @route GET /api/v1/market/shadow-results?days=30&setting=t10_tp1&score=v1&shadow=all
+ */
+export const getShadowResults = async (req, res, next) => {
+  try {
+    const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 180);
+    const setting = /^t(10|15)_(tp1|tpai)$/.test(req.query.setting) ? req.query.setting : "t10_tp1";
+    const scoreVersion = req.query.score === "v2" ? "v2" : "v1";
+    const since = new Date(Date.now() - days * 86400000).toISOString();
 
+    const rows = [];
+    for (let from = 0; ; from += 1000) {
+      let query = supabase
+        .from("market_signals")
+        .select("created_at, shadow, direction, tv_direction, coin_direction, confidence, score_v2, grade")
+        .not("graded_at", "is", null)
+        .gte("created_at", since)
+        .order("created_at")
+        .range(from, from + 999);
+      if (req.query.shadow === "only") query = query.eq("shadow", true);
+      const { data, error } = await query;
+      if (error) throw new BadRequestError(`Could not read graded signals: ${error.message}`);
+      rows.push(...data);
+      if (data.length < 1000) break;
+    }
+
+    res.status(200).json({ days, ...summarizeGrades(rows, setting, scoreVersion) });
   } catch (error) {
     next(error);
   }

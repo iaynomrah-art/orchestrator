@@ -10,6 +10,8 @@ import { errorHandler } from "./middleware/errorHandler.js";
 import "./cron/marginAnalyze.js";
 import "./cron/funderDailyReset.js";
 import "./cron/priceStreamer.js";
+import "./cron/shadowSignals.js";
+import "./cron/gradeSignals.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;

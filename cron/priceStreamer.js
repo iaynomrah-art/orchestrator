@@ -1,5 +1,6 @@
 import { supabase } from "../config/supabase.js";
 import { getExchangeConfig, fetchTechnicalData, TIMEFRAME_MAP } from "../helper/marketHelper.js";
+import { recordPrice } from "../helper/candleRecorder.js";
 
 let lastPrice = null;
 let isRunning = false;
@@ -35,6 +36,8 @@ async function streamPrice() {
 
     const data = await fetchTechnicalData(config, microTfData);
     const currentPrice = data.price;
+    // Every fetched price feeds the 1-minute candles used to grade shadow signals
+    recordPrice(targetSymbol, currentPrice);
 
     if (currentPrice && currentPrice !== lastPrice) {
       const result = await channel.httpSend("price-update", {

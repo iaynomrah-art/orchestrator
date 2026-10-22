@@ -83,7 +83,7 @@ export const fetchTechnicalData = async (config, tfData) => {
 
   const ticker = `${config.exchange}:${config.tv_symbol}`;
 
-  const response = await fetch(url, {
+  const request = () => fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -95,8 +95,21 @@ export const fetchTechnicalData = async (config, tfData) => {
         query: { types: [] }
       },
       columns: columns
-    })
+    }),
+    signal: AbortSignal.timeout(15000)
   });
+
+  // A dropped connection ("fetch failed", timeout) is retried twice; an HTTP error is not
+  let response;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      response = await request();
+      break;
+    } catch (error) {
+      if (attempt >= 3) throw new Error(`TradingView scan unreachable (${error.cause?.code || error.message})`);
+      await new Promise((r) => setTimeout(r, 1500 * attempt));
+    }
+  }
 
   if (!response.ok) {
     throw new Error(`TradingView scan request failed: ${response.statusText}`);
@@ -144,6 +157,7 @@ export const fetchTechnicalData = async (config, tfData) => {
     basis: `${trendTxt}. ${macdTxt}. ${rsiTxt}.`,
     price: price,
     raw_rsi: rsi,
+    recommend_all: recommendAll,
     atr: atr,
     sma_200: sma200,
     support1: support1,
@@ -164,7 +178,7 @@ const getOllamaGenerateUrl = () => {
 // Returns source "ai" when the verdict and reasoning come from the model, or
 // "technicals_fallback" when the model was unavailable or gave no valid verdict —
 // the reasoning then says so instead of showing model text that doesn't match.
-export const askOllama = async (symbol, microTf, macroTf, microData, macroData, headlines, currentUtcTime) => {
+export const askOllama = async (symbol, microTf, macroTf, microData, macroData, headlines, currentUtcTime, contextLines = []) => {
   const currentPrice = microData.price;
   const atr = microData.atr;
 
@@ -185,21 +199,15 @@ ATR (Volatility): ${atr}
 
 LATEST HEADLINES:
 ${(headlines && headlines.length ? headlines : ["(none available)"]).map((h) => `- ${h}`).join("\n")}
-
+${contextLines.length ? `\nMARKET CONDITIONS:\n${contextLines.map((l) => `- ${l}`).join("\n")}\n` : ""}
 DECISION LOGIC (Execute strictly for short-term ${microTf} horizon):
-1. TREND ALIGNMENT: Prioritize the Micro Trend (${microTf}) if the current price is above the 200 SMA (for BUY) or below the 200 SMA (for SELL). 
-2. RISK/REWARD SELECTION: 
-   - If you output BUY: Set stop_loss to ${buyStop} and target_price to ${buyTarget}.
-   - If you output SELL: Set stop_loss to ${sellStop} and target_price to ${sellTarget}.
-3. NEWS CUES: Only reference the provided headlines if they explicitly invalidate the technical setup. Otherwise, ignore them.
+1. TREND ALIGNMENT: Prioritize the Micro Trend (${microTf}) if the current price is above the 200 SMA (for BUY) or below the 200 SMA (for SELL).
+2. NEWS IMPACT: Judge whether the headlines support your verdict for ${symbol}, go against it, or are not relevant.
 
 Respond strictly in JSON format matching this exact schema. Do not output markdown code blocks, just the raw JSON:
 {
   "verdict": "BUY", // MUST BE EXACTLY ONE WORD: either "BUY" or "SELL". No sentences.
-  "entry_price": ${currentPrice},
-  "target_price": <number>,
-  "stop_loss": <number>,
-  "confidence_score": <number>,
+  "news_impact": "neutral", // MUST BE EXACTLY ONE WORD: "supports", "against" or "neutral".
   "reasoning": "Short 2-sentence explanation."
 }
 `;
@@ -211,7 +219,8 @@ Respond strictly in JSON format matching this exact schema. Do not output markdo
     format: "json",
     // Keep the model loaded between signal requests so we don't pay the ~6-8s reload each time
     keep_alive: process.env.OLLAMA_KEEP_ALIVE || "30m",
-    options: { temperature: 0.0, num_thread: Number(process.env.OLLAMA_NUM_THREAD) || 6 }
+    // 4 of the VPS's 6 cores, so a signal doesn't stall the other apps on it
+    options: { temperature: 0.0, num_thread: Number(process.env.OLLAMA_NUM_THREAD) || 4 }
   };
 
   const fallback = (why) => {
@@ -221,7 +230,7 @@ Respond strictly in JSON format matching this exact schema. Do not output markdo
       entry_price: currentPrice,
       target_price: fallbackVerdict === "BUY" ? buyTarget : sellTarget,
       stop_loss: fallbackVerdict === "BUY" ? buyStop : sellStop,
-      confidence_score: null,
+      news_impact: "neutral",
       reasoning: `${why} Direction taken from the ${microTf} technical indicators (${microData.process})`,
       source: "technicals_fallback",
       model: null,
@@ -266,10 +275,17 @@ Respond strictly in JSON format matching this exact schema. Do not output markdo
       return fallback("The AI model returned no valid verdict.");
     }
 
+    // The model only picks the direction. Levels always come from the ATR math above,
+    // since the model sometimes copies the other direction's numbers back.
     return {
       ...aiData,
       verdict,
-      confidence_score: Number.isFinite(Number(aiData.confidence_score)) ? Number(aiData.confidence_score) : null,
+      entry_price: currentPrice,
+      target_price: verdict === "BUY" ? buyTarget : sellTarget,
+      stop_loss: verdict === "BUY" ? buyStop : sellStop,
+      news_impact: ["supports", "against"].includes(String(aiData.news_impact).trim().toLowerCase())
+        ? String(aiData.news_impact).trim().toLowerCase()
+        : "neutral",
       reasoning: typeof aiData.reasoning === "string" ? aiData.reasoning.trim().slice(0, 1000) : null,
       source: "ai",
       model: OLLAMA_MODEL,
@@ -278,4 +294,59 @@ Respond strictly in JSON format matching this exact schema. Do not output markdo
     console.error(`Ollama error: ${error.message}`);
     return fallback("The AI model was unavailable.");
   }
+};
+
+// Points-based signal score (0-100), stored as the signal's confidence.
+// Each check looks at the inputs from the chosen direction's side; the
+// weights are a starting point to tune once real trade results exist.
+export const scoreSignal = (direction, microData, macroData, newsImpact) => {
+  const isBuy = direction === "BUY";
+  const sameSide = (decision) => decision === direction;
+  // TradingView's Recommend.All: above 0.1 is a buy rating, below -0.1 a sell rating
+  const vote = isBuy ? microData.recommend_all : -microData.recommend_all;
+  // A 1h ATR above ~35% of the daily ATR means unusually wide hourly candles
+  const atrRatio = macroData.atr > 0 ? microData.atr / macroData.atr : null;
+
+  const checks = [
+    { check: "Both trends agree with the direction", points: 25, passed: sameSide(microData.decision) && sameSide(macroData.decision) },
+    { check: "Price on the correct side of the 200 SMA", points: 15, passed: isBuy ? microData.price > microData.sma_200 : microData.price < microData.sma_200 },
+    { check: "Indicator vote clearly favors the direction", points: 20, passed: vote > 0.1 },
+    { check: "RSI not stretched against the trade", points: 10, passed: isBuy ? microData.raw_rsi < 70 : microData.raw_rsi > 30 },
+    { check: "Volatility (ATR) normal", points: 10, passed: atrRatio !== null && atrRatio <= 0.35 },
+    { check: "News supports the direction", points: 20, passed: newsImpact === "supports" },
+    { check: "News goes against the direction", points: -20, passed: newsImpact === "against" },
+  ];
+
+  const total = checks.reduce((sum, c) => sum + (c.passed ? c.points : 0), 0);
+  return { score: Math.max(0, Math.min(100, total)), breakdown: checks };
+};
+
+// The same score with the MT5 volatility checks in place of "ATR normal". Saved
+// next to the original so graded signals show whether the new checks help.
+// Blocks (news, rollover) don't change points: they keep the delayed hedge off.
+export const scoreSignalV2 = (direction, microData, macroData, newsImpact, ctx = {}) => {
+  const base = scoreSignal(direction, microData, macroData, newsImpact);
+  const isAtrCheck = (c) => c.check.startsWith("Volatility (ATR)");
+  const checks = base.breakdown.filter((c) => !isAtrCheck(c));
+  const vol = ctx.volatility;
+  const ratio = vol?.ratio_now == null ? null : Number(vol.ratio_now);
+  if (ratio !== null) {
+    checks.push({ check: "Moving normally for this hour", points: 10, passed: ratio >= 0.5 && ratio <= 1.8 });
+    checks.push({ check: "Much wilder than normal for this hour", points: -10, passed: ratio > 1.8 });
+    checks.push({ check: "Barely moving for this hour", points: -10, passed: ratio < 0.5 });
+    // Mean time to SL/TP grows with (distance / hourly move)^2; above ~3.5x it rarely finishes in 8h
+    const forecast = Number(vol.forecast_6h);
+    if (forecast > 0 && ctx.slDistance > 0) {
+      checks.push({ check: "Stop too far to finish within 8h", points: -10, passed: ctx.slDistance / forecast > 3.5 });
+    }
+  } else {
+    checks.push(base.breakdown.find(isAtrCheck));   // no fresh MT5 numbers: keep the ATR check
+  }
+
+  const blocks = [];
+  if (ctx.news?.length) blocks.push(`High-impact news: ${ctx.news.map((e) => `${e.country} ${e.title} ${e.at.slice(11, 16)} UTC`).join(", ")}`);
+  if (ctx.rollover) blocks.push("Rollover hours (thin market, wide spreads)");
+
+  const total = checks.reduce((sum, c) => sum + (c.passed ? c.points : 0), 0);
+  return { score: Math.max(0, Math.min(100, total)), breakdown: checks, blocks };
 };

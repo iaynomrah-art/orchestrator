@@ -1,6 +1,7 @@
 import { supabase } from "../config/supabase.js";
 import { BadRequestError } from "../errors/index.js";
 import { broadcastAndWait } from "../helper/broadcastHelper.js";
+import { planDelayedHedge, HEDGE_TRIGGER_PCT } from "../helper/hedgeHelper.js";
 import crypto from "crypto";
 
 /**
@@ -269,7 +270,7 @@ const resolvePairSignal = async (signalId, symbol, primaryOrderType) => {
   if (!signalId) return null;
   const { data: signal, error } = await supabase
     .from("market_signals")
-    .select("id, symbol, direction, created_at")
+    .select("id, symbol, direction, created_at, confidence, source, inputs")
     .eq("id", signalId)
     .maybeSingle();
 
@@ -289,7 +290,58 @@ const resolvePairSignal = async (signalId, symbol, primaryOrderType) => {
     console.warn(`[pair] Signal ${signalId} is older than 6h; pairing without it`);
     return null;
   }
-  return signal.id;
+  return signal;
+};
+
+// Test mode (skip the AI score) only works when the server allows it — never on by default
+const testModeAvailable = () => process.env.DELAYED_HEDGE_ALLOW_TEST_MODE === "true";
+
+// Runs the delayed hedge rules for a pairing request body (same fields /pair takes)
+const planPairStrategy = async (body) => {
+  const signal = await resolvePairSignal(body.signal_id, body.symbol, body.primary_order_type);
+  const plan = planDelayedHedge({
+    testMode: body.test_mode === true && testModeAvailable(),
+    enabled: process.env.DELAYED_HEDGE_ENABLED === "true",
+    minScore: Number(process.env.DELAYED_HEDGE_MIN_SCORE) || 70,
+    signal,
+    events: [body.p1Event, body.p2Event],
+    operations: [body.p1Payload?.operation, body.p2Payload?.operation],
+    primary: {
+      order_amount: body.primary_order_amount, stop_loss: body.primary_stop_loss, take_profit: body.primary_take_profit,
+      sl_type: body.primary_sl_type ?? "dollar", tp_type: body.primary_tp_type ?? "dollar",
+    },
+    primarySafeLimit: body.primary_safe_limit,
+    secondarySafeLimit: body.secondary_safe_limit,
+  });
+  return { signal, plan, score: signal?.confidence ?? null };
+};
+
+/**
+ * Read-only: would this pair be allowed to use the delayed hedge? Lets the
+ * pairing screen show the result and offer the choice before anything is staged.
+ * @route POST /api/v1/units/pair/strategy
+ */
+export const pairStrategyAction = async (req, res, next) => {
+  try {
+    const { plan, score } = await planPairStrategy(req.body || {});
+    res.status(200).json({
+      delayed_allowed: plan.strategy === "delayed_hedge",
+      reason: plan.reason,
+      score,
+      swap: Boolean(plan.swap),
+      hedge: plan.hedge ?? null,
+      test_mode_available: testModeAvailable(),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Fields that belong to the account (not the trade) in a unit command payload
+const ACCOUNT_PAYLOAD_FIELDS = ["username", "password", "server", "account_id", "db_account_id"];
+const swapAccounts = (p1, p2) => {
+  const pick = (p) => Object.fromEntries(ACCOUNT_PAYLOAD_FIELDS.map((k) => [k, p?.[k]]));
+  return [{ ...p1, ...pick(p2) }, { ...p2, ...pick(p1) }];
 };
 
 /**
@@ -298,7 +350,7 @@ const resolvePairSignal = async (signalId, symbol, primaryOrderType) => {
  */
 export const pairUnitsAction = async (req, res, next) => {
   let savedPairId = null;
-  const {
+  let {
     primary_id,
     secondary_id,
     symbol,
@@ -324,7 +376,40 @@ export const pairUnitsAction = async (req, res, next) => {
       throw new BadRequestError("primary_id, secondary_id, unit1Id, and unit2Id are required");
     }
 
-    const linkedSignalId = await resolvePairSignal(signal_id, symbol, primary_order_type);
+    let { signal: linkedSignal, plan } = await planPairStrategy(req.body || {});
+    const linkedSignalId = linkedSignal?.id ?? null;
+
+    // The pairing screen sends the user's pick; without one (older dashboard) the rules decide
+    const { strategy_choice } = req.body || {};
+    if (strategy_choice === "natural" && plan.strategy === "delayed_hedge") {
+      plan = { strategy: "natural", reason: "Natural hedge chosen on the pairing screen" };
+    } else if (strategy_choice === "delayed_hedge" && plan.strategy !== "delayed_hedge") {
+      // Something changed since the screen checked (e.g. signal expired, equity moved)
+      throw new BadRequestError(`Delayed hedge is no longer allowed for this pair: ${plan.reason}. Pick natural hedge or re-check.`);
+    }
+    console.log(`[pair] Strategy: ${plan.strategy} — ${plan.reason}`);
+
+    if (plan.strategy === "delayed_hedge") {
+      if (plan.swap) {
+        // Keep the trade, swap which account runs which leg
+        [primary_id, secondary_id] = [secondary_id, primary_id];
+        [unit1Id, unit2Id] = [unit2Id, unit1Id];
+        [p1Payload, p2Payload] = swapAccounts(p1Payload, p2Payload);
+      }
+      secondary_order_amount = plan.hedge.order_amount;
+      secondary_stop_loss = plan.hedge.stop_loss;
+      secondary_take_profit = plan.hedge.take_profit;
+      // Staging checks margin/stops for the real hedge size; the live hedge levels
+      // are the primary's SL/TP prices, set once the primary is open
+      p2Payload = {
+        ...p2Payload,
+        order_amount: secondary_order_amount,
+        stop_loss: secondary_stop_loss,
+        take_profit: secondary_take_profit,
+        sl_type: "dollar",
+        tp_type: "dollar",
+      };
+    }
 
     // 1. Save to DB Immediately with status 'initializing'
     const { data: pairedRecord, error: insertError } = await supabase
@@ -345,6 +430,10 @@ export const pairUnitsAction = async (req, res, next) => {
         is_active: true,
         // Only sent when linking, so pairing keeps working before the signals migration has run
         ...(linkedSignalId ? { signal_id: linkedSignalId } : {}),
+        // Natural pairs send nothing new, so they keep working before the delayed hedge migration has run
+        ...(plan.strategy === "delayed_hedge"
+          ? { strategy: "delayed_hedge", hedge_status: "standby", hedge_trigger_pct: HEDGE_TRIGGER_PCT }
+          : {}),
       })
       .select();
 
@@ -481,6 +570,9 @@ export const pairUnitsAction = async (req, res, next) => {
       success: true,
       message: "Accounts successfully paired and staged via Orchestrator!",
       pairedRecord: pairedRecord?.[0],
+      strategy: plan.strategy,
+      strategy_reason: plan.reason,
+      swapped: Boolean(plan.swap),
       p1Result,
       p2Result
     });
