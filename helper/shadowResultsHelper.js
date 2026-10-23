@@ -9,6 +9,67 @@ export const SCORE_BUCKETS = [
   { label: "under 50", min: -Infinity, max: 50 },
 ];
 export const SOURCES = ["ai", "tv", "coin"];
+
+// Shadow signals aren't traded, so the monitor shows the trade the system would
+// open: lot from the auto-sizing rule for a fixed $ risk (same 0.30 cap as the
+// pairing screen), TP = SL distance, equal-lot hedge at a 10% dip.
+export const REFERENCE_RISK = 100;
+export const MAX_AUTO_LOT = 0.3;
+const CONTRACT = 100;   // XAUUSD: $ per 1.00 move per 1.0 lot
+const TRIGGER = 0.1;
+
+/**
+ * The trade a signal stands for. With a grade (story), also how it closed:
+ *   A  closed at TP, only the primary open             -> +risk
+ *   B  hedge opened at the trigger, closed at the SL   -> -10% of risk (pair)
+ *   C  hedge opened at the trigger, closed at the TP   -> -10% of risk (pair)
+ *   X  still open at 8h: closed at the market price then (markPrice);
+ *      locked at -10% if the hedge had opened (mae >= 10% of the SL distance)
+ */
+export const referenceTrade = (direction, entry, slDistance, story = null, { mae = null, markPrice = null } = {}) => {
+  if (!(slDistance > 0) || !(entry > 0)) return null;
+  const s = direction === "buy" ? 1 : -1;
+  const lot = Math.min(MAX_AUTO_LOT, Math.max(0.01, Math.round((REFERENCE_RISK / (slDistance * CONTRACT)) * 100) / 100));
+  const risk = lot * slDistance * CONTRACT;   // $ at the SL (and at the TP, since TP = SL)
+  const r2 = (x) => Math.round(x * 100) / 100;
+  const sl = entry - s * slDistance, tp = entry + s * slDistance, trigger = entry - s * TRIGGER * slDistance;
+
+  let close = null, pnl = null, hedged = null;
+  if (story === "A") { close = tp; pnl = risk; hedged = false; }
+  else if (story === "B") { close = sl; pnl = -TRIGGER * risk; hedged = true; }
+  else if (story === "C") { close = tp; pnl = -TRIGGER * risk; hedged = true; }
+  else if (story === "X") {
+    hedged = mae != null && mae >= TRIGGER;
+    if (markPrice > 0) {
+      close = markPrice;
+      pnl = hedged ? -TRIGGER * risk : (markPrice - entry) * s * lot * CONTRACT;
+    }
+  }
+  return {
+    lot, risk: r2(risk), entry: r2(entry), sl: r2(sl), tp: r2(tp), trigger: r2(trigger),
+    close: close === null ? null : r2(close), hedged, pnl: pnl === null ? null : r2(pnl),
+  };
+};
+
+/** Totals over graded signals for each source: A/B/C/X counts and the $ result at REFERENCE_RISK. */
+export const scoreboard = (rows, setting = "t10_tp1") => {
+  const out = {};
+  for (const src of SOURCES) {
+    const t = { graded: 0, a: 0, b: 0, c: 0, x: 0, pnl: 0 };
+    for (const r of rows) {
+      const g = r.grade?.results?.[src]?.[setting];
+      const dir = src === "ai" ? r.direction : src === "tv" ? r.tv_direction : r.coin_direction;
+      if (!g || !dir) continue;
+      t.graded++;
+      t[g.story.toLowerCase()]++;
+      const trade = referenceTrade(dir, Number(r.entry_price), Number(r.grade.sl_distance), g.story);
+      if (trade?.pnl != null) t.pnl += trade.pnl;
+    }
+    const resolved = t.a + t.b + t.c;
+    out[src] = { ...t, resolved, pnl: Math.round(t.pnl * 100) / 100, a_rate: resolved ? Math.round((t.a / resolved) * 1000) / 10 : null };
+  }
+  return out;
+};
 // Signals of the same direction within this window count as one independent call
 const INDEPENDENT_GAP_MS = 4 * 3600 * 1000;
 
@@ -74,15 +135,24 @@ export const summarizeGrades = (rows, setting = "t10_tp1", scoreVersion = "v1") 
 
   // Tracked support/resistance checks (r.sr.checks): the AI's results when each passed vs not
   const checks = {};
+  const lastCheckCounted = {};
   for (const r of graded) {
     const g = r.grade.results.ai?.[setting];
     if (!g || !r.sr?.checks) continue;
+    const at = new Date(r.created_at).getTime();
     for (const [key, passed] of Object.entries(r.sr.checks)) {
       checks[key] ??= { passed: emptyTally(), failed: emptyTally() };
-      const tally = checks[key][passed ? "passed" : "failed"];
+      const side = passed ? "passed" : "failed";
+      const tally = checks[key][side];
       tally.graded++;
       tally[g.story.toLowerCase()]++;
       if (g.story !== "X") tally.resolved++;
+      // Same rule as the score table: same direction within 4 hours = one independent call
+      const last = lastCheckCounted[`${key}:${side}`];
+      if (!last || at - last.at >= INDEPENDENT_GAP_MS || last.direction !== r.direction) {
+        lastCheckCounted[`${key}:${side}`] = { at, direction: r.direction };
+        tally.independent++;
+      }
     }
   }
 

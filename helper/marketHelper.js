@@ -178,7 +178,7 @@ const getOllamaGenerateUrl = () => {
 // Returns source "ai" when the verdict and reasoning come from the model, or
 // "technicals_fallback" when the model was unavailable or gave no valid verdict —
 // the reasoning then says so instead of showing model text that doesn't match.
-export const askOllama = async (symbol, microTf, macroTf, microData, macroData, headlines, currentUtcTime, contextLines = []) => {
+export const askOllama = async (symbol, microTf, macroTf, microData, macroData, headlines, currentUtcTime, contextLines = [], candleLines = []) => {
   const currentPrice = microData.price;
   const atr = microData.atr;
 
@@ -199,11 +199,11 @@ ATR (Volatility): ${atr}
 
 LATEST HEADLINES:
 ${(headlines && headlines.length ? headlines : ["(none available)"]).map((h) => `- ${h}`).join("\n")}
-${contextLines.length ? `\nMARKET CONDITIONS:\n${contextLines.map((l) => `- ${l}`).join("\n")}\n` : ""}
+${contextLines.length ? `\nMARKET CONDITIONS:\n${contextLines.map((l) => `- ${l}`).join("\n")}\n` : ""}${candleLines.length ? `\nLAST 6 HOURS (5-minute candles):\n${candleLines.map((l) => `- ${l}`).join("\n")}\n` : ""}
 DECISION LOGIC (Execute strictly for short-term ${microTf} horizon):
 1. TREND ALIGNMENT: Prioritize the Micro Trend (${microTf}) if the current price is above the 200 SMA (for BUY) or below the 200 SMA (for SELL).
 2. NEWS IMPACT: Judge whether the headlines support your verdict for ${symbol}, go against it, or are not relevant.
-
+${candleLines.length ? "3. 6-HOUR CANDLES: Judge whether the last 6 hours are bullish or bearish, and favour that direction for a 4-8 hour trade.\n" : ""}
 Respond strictly in JSON format matching this exact schema. Do not output markdown code blocks, just the raw JSON:
 {
   "verdict": "BUY", // MUST BE EXACTLY ONE WORD: either "BUY" or "SELL". No sentences.

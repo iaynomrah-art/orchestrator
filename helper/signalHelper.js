@@ -12,6 +12,11 @@ import {
   MACRO_PAIRINGS,
 } from "./marketHelper.js";
 import { getMarketContext, describeContext, getSupportResistanceChecks } from "./marketContextHelper.js";
+import { getCandleSummary, describeCandles } from "./candleContext.js";
+
+// Prompt with the "last 6 hours of 5-minute candles" lines (PROMPT_CANDLE_CONTEXT=true).
+// Off by default; each signal saves which prompt it used, so results can be split by it.
+const candleContextOn = () => process.env.PROMPT_CANDLE_CONTEXT === "true";
 
 // Real signal requests in progress: the shadow job skips its turn while one runs,
 // so it never makes a user wait on the single Ollama CPU slot.
@@ -49,6 +54,7 @@ export const generateSignal = async ({ symbol = "XAUUSD", timeframe = "1h", shad
       getMarketContext(targetSymbol),
     ]);
     const currentUtcTime = new Date().toUTCString();
+    const candleSummary = candleContextOn() ? await getCandleSummary(targetSymbol).catch(() => null) : null;
 
     const aiResponse = await askOllama(
       targetSymbol,
@@ -58,7 +64,8 @@ export const generateSignal = async ({ symbol = "XAUUSD", timeframe = "1h", shad
       macroData,
       headlines,
       currentUtcTime,
-      describeContext(context)
+      describeContext(context),
+      describeCandles(candleSummary)
     );
 
     // askOllama always returns BUY or SELL (falling back to the technicals itself)
@@ -109,6 +116,8 @@ export const generateSignal = async ({ symbol = "XAUUSD", timeframe = "1h", shad
         news_ahead: context.news,
         hedge_block: v2.blocks,
         support_resistance: supportResistance,
+        prompt_version: candleSummary ? "v2-candles-6h" : "v1",
+        candle_summary: candleSummary,
       },
     };
 

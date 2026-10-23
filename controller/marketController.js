@@ -6,7 +6,7 @@ import {
   TIMEFRAME_MAP,
 } from "../helper/marketHelper.js";
 import { generateSignal } from "../helper/signalHelper.js";
-import { summarizeGrades } from "../helper/shadowResultsHelper.js";
+import { summarizeGrades, scoreboard, referenceTrade, REFERENCE_RISK, MAX_AUTO_LOT } from "../helper/shadowResultsHelper.js";
 import { getVolatility } from "../helper/marketContextHelper.js";
 import { loadCandles } from "../helper/candleRecorder.js";
 
@@ -73,13 +73,37 @@ export const getShadowStatus = async (req, res, next) => {
       supabase.from("market_candles").select("minute, close, ticks").eq("symbol", "XAUUSD").order("minute", { ascending: false }).limit(1).maybeSingle(),
       supabase.from("market_candles").select("minute", { count: "exact", head: true }).eq("symbol", "XAUUSD").gte("minute", hourAgo),
       supabase.from("market_signals")
-        .select("id, created_at, shadow, direction, tv_direction, coin_direction, confidence, score_v2, entry_price, graded_at, grade")
-        .order("created_at", { ascending: false }).limit(25),
+        .select("id, created_at, shadow, direction, tv_direction, coin_direction, confidence, score_v2, entry_price, stop_price, target_price, graded_at, grade")
+        .eq("shadow", true).order("created_at", { ascending: false }).limit(48),
       supabase.from("market_signals").select("id", { count: "exact", head: true }).eq("shadow", true),
       supabase.from("market_signals").select("id", { count: "exact", head: true }).eq("shadow", true).not("graded_at", "is", null),
     ]);
 
+    // Scoreboard over every graded shadow signal (paged; a few hundred rows)
+    const gradedRows = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await supabase.from("market_signals")
+        .select("direction, tv_direction, coin_direction, entry_price, grade")
+        .eq("shadow", true).not("graded_at", "is", null).range(from, from + 999);
+      if (error) throw new BadRequestError(error.message);
+      gradedRows.push(...data);
+      if (data.length < 1000) break;
+    }
+
     const outcome = (g, src) => g?.results?.[src]?.t10_tp1?.story ?? null;
+    const slDistance = (s) => Number(s.grade?.sl_distance) || Math.abs(Number(s.entry_price) - Number(s.stop_price));
+    // Grades are measured from the first recorded price at signal time when there is one
+    const entryOf = (s) => Number(s.grade?.entry_price) || Number(s.entry_price);
+
+    // Unfinished trades close at the market price at the 8-hour mark
+    const markPrices = {};
+    await Promise.all((signals.data || []).filter((s) => outcome(s.grade, "ai") === "X").map(async (s) => {
+      const end = new Date(new Date(s.created_at).getTime() + 8 * 3600 * 1000);
+      const { data } = await supabase.from("market_candles").select("close").eq("symbol", "XAUUSD")
+        .lte("minute", end.toISOString()).gte("minute", new Date(end.getTime() - 3 * 3600 * 1000).toISOString())
+        .order("minute", { ascending: false }).limit(1).maybeSingle();
+      if (data) markPrices[s.id] = Number(data.close);
+    }));
     const nextRun = new Date(now);
     nextRun.setUTCMinutes(5, 0, 0);
     if (nextRun <= now) nextRun.setUTCHours(nextRun.getUTCHours() + 1);
@@ -110,11 +134,17 @@ export const getShadowStatus = async (req, res, next) => {
       volatility: vol.data ?? null,
       candles: { last: lastCandle.data ?? null, last_hour: candlesHour.count ?? 0 },
       counts: { shadow: totals.count ?? 0, graded: graded.count ?? 0 },
+      reference: { risk: REFERENCE_RISK, max_lot: MAX_AUTO_LOT, trigger_pct: 10, tp: "TP = SL distance" },
+      scoreboard: scoreboard(gradedRows),
       signals: (signals.data || []).map((s) => ({
         id: s.id, created_at: s.created_at, shadow: s.shadow, entry_price: s.entry_price,
         ai: s.direction, tv: s.tv_direction, coin: s.coin_direction, score: s.confidence, score_v2: s.score_v2,
         graded_at: s.graded_at, skipped: s.grade?.skipped ?? null,
         outcome: { ai: outcome(s.grade, "ai"), tv: outcome(s.grade, "tv"), coin: outcome(s.grade, "coin") },
+        hours: s.grade?.results?.ai?.t10_tp1?.hours ?? (outcome(s.grade, "ai") === "X" ? 8 : null),
+        trade: referenceTrade(s.direction, entryOf(s), slDistance(s), outcome(s.grade, "ai"), {
+          mae: s.grade?.results?.ai?.t10_tp1?.mae ?? null, markPrice: markPrices[s.id] ?? null,
+        }),
       })),
       replay,
     });

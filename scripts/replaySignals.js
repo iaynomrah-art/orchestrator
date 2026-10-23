@@ -16,6 +16,7 @@ import fs from "fs";
 import { askOllama, scoreSignal } from "../helper/marketHelper.js";
 import { summarizeGrades } from "../helper/shadowResultsHelper.js";
 import { gradeAll } from "../helper/gradeHelper.js";
+import { summarizeCandles, describeCandles, CANDLE_HOURS } from "../helper/candleContext.js";
 
 const arg = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -26,6 +27,8 @@ const H1_PATH = arg("h1");
 const N = Number(arg("n", 150));
 const OUT = arg("out", "replay.jsonl");
 let seed = Number(arg("seed", 7));
+// --candles: add the "last 6 hours of 5-minute candles" lines to the prompt (prompt v2)
+const WITH_CANDLES = process.argv.includes("--candles");
 if (!M5_PATH || !H1_PATH) {
   console.error("Usage: node scripts/replaySignals.js --m5 <M5.csv> --h1 <H1.csv> [--n 150] [--out replay.jsonl]");
   process.exit(1);
@@ -191,7 +194,14 @@ for (const { t, i0 } of picked) {
   const macro = indicatorsAt(d1, di);
   if (!micro || !macro) continue;
   const utcMs = serverToUtcMs(t);
-  const ai = await askOllama("XAUUSD", "1 hour", "1 day", micro, macro, [], new Date(utcMs).toUTCString(), []);
+  let candleLines = [];
+  if (WITH_CANDLES) {
+    const from = lowerBound(m5.time, t - CANDLE_HOURS * 3600), to = lowerBound(m5.time, t);
+    const bars = [];
+    for (let k = from; k < to; k++) bars.push({ time: m5.time[k], open: m5.open[k], high: m5.high[k], low: m5.low[k], close: m5.close[k] });
+    candleLines = describeCandles(summarizeCandles(bars));
+  }
+  const ai = await askOllama("XAUUSD", "1 hour", "1 day", micro, macro, [], new Date(utcMs).toUTCString(), [], candleLines);
   if (ai.source !== "ai") {
     // A technicals fallback is the rating, not the AI: never record it as the AI's answer
     if (++failuresInARow >= 3) {
@@ -209,7 +219,7 @@ for (const { t, i0 } of picked) {
     server_time: t,
     created_at: new Date(utcMs).toISOString(),
     direction, tv_direction: dirs.tv, coin_direction: dirs.coin,
-    confidence: score, source: ai.source, news_impact: ai.news_impact,
+    confidence: score, source: ai.source, news_impact: ai.news_impact, prompt: WITH_CANDLES ? "v2-candles-6h" : "v1", candle_lines: candleLines,
     grade: { sl_distance: slD, tp_distance: tpD, entry_broker: m5.open[i0], results: gradeAll(m5, i0, dirs, slD, tpD, 8 * 3600) },
   };
   fs.appendFileSync(OUT, JSON.stringify(row) + "\n");
