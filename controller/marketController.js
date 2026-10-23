@@ -6,7 +6,8 @@ import {
   TIMEFRAME_MAP,
 } from "../helper/marketHelper.js";
 import { generateSignal } from "../helper/signalHelper.js";
-import { summarizeGrades, scoreboard, referenceTrade, naturalTrade, strategyComparison, REFERENCE_RISK, MAX_AUTO_LOT } from "../helper/shadowResultsHelper.js";
+import { summarizeGrades, scoreboard, referenceTrade, naturalTrade, strategyComparison, tradingCost, REFERENCE_RISK, MAX_AUTO_LOT } from "../helper/shadowResultsHelper.js";
+import { refreshTradingCost } from "../helper/tradingCostHelper.js";
 import { getVolatility } from "../helper/marketContextHelper.js";
 import { loadCandles } from "../helper/candleRecorder.js";
 
@@ -66,6 +67,7 @@ export const getSizingVolatility = async (req, res, next) => {
  */
 export const getShadowStatus = async (req, res, next) => {
   try {
+    await refreshTradingCost();
     const now = new Date();
     const hourAgo = new Date(now.getTime() - 3600 * 1000).toISOString();
     const [vol, lastCandle, candlesHour, signals, totals, graded] = await Promise.all([
@@ -134,7 +136,7 @@ export const getShadowStatus = async (req, res, next) => {
       volatility: vol.data ?? null,
       candles: { last: lastCandle.data ?? null, last_hour: candlesHour.count ?? 0 },
       counts: { shadow: totals.count ?? 0, graded: graded.count ?? 0 },
-      reference: { risk: REFERENCE_RISK, max_lot: MAX_AUTO_LOT, trigger_pct: 10, tp: "TP = SL distance" },
+      reference: { risk: REFERENCE_RISK, max_lot: MAX_AUTO_LOT, trigger_pct: 10, tp: "TP = SL distance", cost: tradingCost() },
       scoreboard: scoreboard(gradedRows),
       comparison: strategyComparison(gradedRows),
       signals: (signals.data || []).map((s) => ({
@@ -170,6 +172,7 @@ export const getShadowStatus = async (req, res, next) => {
  */
 export const getReplayResults = async (req, res, next) => {
   try {
+    await refreshTradingCost();
     const all = [];
     for (let from = 0; ; from += 1000) {
       const { data, error } = await supabase.from("replay_signals")
@@ -194,7 +197,7 @@ export const getReplayResults = async (req, res, next) => {
     };
     res.status(200).json({
       runs, run,
-      reference: { risk: REFERENCE_RISK, max_lot: MAX_AUTO_LOT, trigger_pct: 10, tp: "TP = SL distance" },
+      reference: { risk: REFERENCE_RISK, max_lot: MAX_AUTO_LOT, trigger_pct: 10, tp: "TP = SL distance", cost: tradingCost() },
       scoreboard: scoreboard(rows),
       comparison: strategyComparison(rows),
       signals: rows.map((r) => ({

@@ -15,6 +15,16 @@ export const SOURCES = ["ai", "tv", "coin"];
 // pairing screen), TP = SL distance, equal-lot hedge at a 10% dip.
 export const REFERENCE_RISK = 100;
 export const MAX_AUTO_LOT = 0.3;
+
+// Trading cost per account that trades, per 1.0 lot (spread, commission, the backup's
+// slightly wider SL / smaller TP). Measured from the real normal-hedge pairs in
+// paired_trading_accounts (setTradingCost); this default is what they showed in Oct 2026.
+let legCostPerLot = 40;
+let costSource = { pairs: 4, measured: true, per_pair_example: null };
+export const setTradingCost = (perLot, source) => {
+  if (Number.isFinite(perLot) && perLot > 0 && perLot < 500) { legCostPerLot = perLot; costSource = source; }
+};
+export const tradingCost = () => ({ per_lot_per_account: Math.round(legCostPerLot * 10) / 10, ...costSource });
 const CONTRACT = 100;   // XAUUSD: $ per 1.00 move per 1.0 lot
 const TRIGGER = 0.1;
 
@@ -42,8 +52,9 @@ export const referenceTrade = (direction, entry, slDistance, story = null, { mae
   else if (story === "C") { close = tp; hedged = true; }
   else if (story === "X") { hedged = (mae != null && mae >= TRIGGER) || !!hedge; if (markPrice > 0) close = markPrice; }
   const fill = hedge?.price > 0 ? hedge.price : trigger;
-  const primaryPnl = close === null ? null : (close - entry) * s * lot * CONTRACT;
-  const hedgePnl = close === null ? null : hedged ? (close - fill) * -s * lot * CONTRACT : 0;
+  const cost = legCostPerLot * lot;   // each account that trades pays this
+  const primaryPnl = close === null ? null : (close - entry) * s * lot * CONTRACT - cost;
+  const hedgePnl = close === null ? null : hedged ? (close - fill) * -s * lot * CONTRACT - cost : 0;
   const net = primaryPnl === null ? null : primaryPnl + hedgePnl;
   // Slippage: how much worse the hedge opened than planned, as % of the planned loss
   // (planned = the 10% dip; e.g. planned -$10, opened at -$14 -> 40%)
@@ -77,7 +88,8 @@ export const naturalTrade = (direction, entry, slDistance, story, { markPrice = 
   else if (story === "X" && markPrice > 0) main = (markPrice - entry) * s * lot * CONTRACT;
   if (main === null) return null;
   const r2 = (x) => Math.round(x * 100) / 100;
-  return { lot, main: r2(main), backup: r2(-main), net: 0 };
+  const cost = legCostPerLot * lot;   // both accounts always trade
+  return { lot, main: r2(main - cost), backup: r2(-main - cost), net: r2(-2 * cost) };
 };
 
 /**
@@ -102,9 +114,9 @@ export const strategyComparison = (rows, setting = "t10_tp1") => {
     trades++;
     totals.delayed.net += d.pnl; totals.delayed.main += d.primary_pnl; totals.delayed.backup += d.hedge_pnl;
     if (d.hedged) totals.delayed.backup_used++;
-    totals.natural.main += n.main; totals.natural.backup += n.backup;
+    totals.natural.main += n.main; totals.natural.backup += n.backup; totals.natural.net += n.net;
     totals.natural.backup_used++;
-    series.push({ t: r.created_at ?? r.moment, delayed: Math.round(totals.delayed.net * 100) / 100, natural: 0 });
+    series.push({ t: r.created_at ?? r.moment, delayed: Math.round(totals.delayed.net * 100) / 100, natural: Math.round(totals.natural.net * 100) / 100 });
   }
   const r2 = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, Math.round(v * 100) / 100]));
   return { trades, delayed: r2(totals.delayed), natural: r2(totals.natural), series };
