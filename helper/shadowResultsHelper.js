@@ -34,15 +34,16 @@ const TRIGGER = 0.1;
  *   B  hedge opened at the trigger, closed at the SL   -> -10% of risk (pair)
  *   C  hedge opened at the trigger, closed at the TP   -> -10% of risk (pair)
  *   X  still open at 8h: closed at the market price then (markPrice);
- *      locked at -10% if the hedge had opened (mae >= 10% of the SL distance)
+ *      locked at -10% if the hedge had opened (mae >= 10% of the SL distance),
+ *      known even without a price, since SL and TP both end the pair there
  */
-export const referenceTrade = (direction, entry, slDistance, story = null, { mae = null, markPrice = null, hedge = null } = {}) => {
+export const referenceTrade = (direction, entry, slDistance, story = null, { mae = null, markPrice = null, hedge = null, trigger: trig = TRIGGER } = {}) => {
   if (!(slDistance > 0) || !(entry > 0)) return null;
   const s = direction === "buy" ? 1 : -1;
   const lot = Math.min(MAX_AUTO_LOT, Math.max(0.01, Math.round((REFERENCE_RISK / (slDistance * CONTRACT)) * 100) / 100));
   const risk = lot * slDistance * CONTRACT;   // $ at the SL (and at the TP, since TP = SL)
   const r2 = (x) => Math.round(x * 100) / 100;
-  const sl = entry - s * slDistance, tp = entry + s * slDistance, trigger = entry - s * TRIGGER * slDistance;
+  const sl = entry - s * slDistance, tp = entry + s * slDistance, trigger = entry - s * trig * slDistance;
 
   // Two accounts: the primary (signal direction) and the hedge (opposite, same lot),
   // opened at its fill (usually the trigger; worse after a jump) and closed with the primary.
@@ -50,14 +51,15 @@ export const referenceTrade = (direction, entry, slDistance, story = null, { mae
   if (story === "A") { close = tp; hedged = false; }
   else if (story === "B") { close = sl; hedged = true; }
   else if (story === "C") { close = tp; hedged = true; }
-  else if (story === "X") { hedged = (mae != null && mae >= TRIGGER) || !!hedge; if (markPrice > 0) close = markPrice; }
+  else if (story === "X") { hedged = (mae != null && mae >= trig) || !!hedge; if (markPrice > 0) close = markPrice; }
   const fill = hedge?.price > 0 ? hedge.price : trigger;
   const cost = legCostPerLot * lot;   // each account that trades pays this
   const primaryPnl = close === null ? null : (close - entry) * s * lot * CONTRACT - cost;
   const hedgePnl = close === null ? null : hedged ? (close - fill) * -s * lot * CONTRACT - cost : 0;
-  const net = primaryPnl === null ? null : primaryPnl + hedgePnl;
+  const locked = (fill - entry) * s * lot * CONTRACT - 2 * cost;
+  const net = primaryPnl !== null ? primaryPnl + hedgePnl : story === "X" && hedged ? locked : null;
   // Slippage: how much worse the hedge opened than planned, as % of the planned loss
-  // (planned = the 10% dip; e.g. planned -$10, opened at -$14 -> 40%)
+  // (planned = the trigger dip, 10% by default; e.g. planned -$10, opened at -$14 -> 40%)
   // (both from cent-rounded prices, so a fill exactly at the trigger reads 0%)
   const plannedLoss = Math.abs(r2(trigger) - r2(entry)), actualLoss = Math.abs(r2(fill) - r2(entry));
   const slippagePct = hedged ? Math.round(((actualLoss - plannedLoss) / plannedLoss) * 1000) / 10 : null;
@@ -92,9 +94,14 @@ export const naturalTrade = (direction, entry, slDistance, story, { markPrice = 
   return { lot, main: r2(main - cost), backup: r2(-main - cost), net: r2(-2 * cost) };
 };
 
+// Price at the 8-hour mark: stored with replay grades, attached by the caller for live rows
+const markOf = (r) => Number(r.grade?.mark_price) || Number(r.mark_price) || null;
+// Hedge trigger of the row's setting (past-data runs can test other triggers)
+const triggerOf = (r) => Number(r.trigger) || TRIGGER;
+
 /**
- * Delayed hedge vs normal hedge over the same AI trades (finished ones), oldest
- * first: totals per account and a running total for the chart.
+ * Delayed hedge vs normal hedge over the same AI trades (finished, or unfinished
+ * with a known result), oldest first: totals per account and a running total for the chart.
  */
 export const strategyComparison = (rows, setting = "t10_tp1") => {
   const totals = {
@@ -106,11 +113,11 @@ export const strategyComparison = (rows, setting = "t10_tp1") => {
   const sorted = [...rows].sort((a, b) => new Date(a.created_at ?? a.moment) - new Date(b.created_at ?? b.moment));
   for (const r of sorted) {
     const g = r.grade?.results?.ai?.[setting];
-    if (!g || g.story === "X" || !r.direction) continue;
+    if (!g || !r.direction) continue;
     const entry = Number(r.grade.entry_price) || Number(r.entry_price), sl = Number(r.grade.sl_distance);
-    const d = referenceTrade(r.direction, entry, sl, g.story, { hedge: g.hedge ?? null });
-    const n = naturalTrade(r.direction, entry, sl, g.story);
-    if (!d || d.pnl === null || !n) continue;
+    const d = referenceTrade(r.direction, entry, sl, g.story, { hedge: g.hedge ?? null, mae: g.mae ?? null, markPrice: markOf(r), trigger: triggerOf(r) });
+    const n = naturalTrade(r.direction, entry, sl, g.story, { markPrice: markOf(r) });
+    if (!d || d.pnl === null || d.primary_pnl === null || !n) continue;
     trades++;
     totals.delayed.net += d.pnl; totals.delayed.main += d.primary_pnl; totals.delayed.backup += d.hedge_pnl;
     if (d.hedged) totals.delayed.backup_used++;
@@ -122,7 +129,11 @@ export const strategyComparison = (rows, setting = "t10_tp1") => {
   return { trades, delayed: r2(totals.delayed), natural: r2(totals.natural), series };
 };
 
-/** Totals over graded signals for each source: A/B/C/X counts and the $ result at REFERENCE_RISK. */
+/**
+ * Totals over graded signals for each source: A/B/C/X counts and the $ result at
+ * REFERENCE_RISK. Unfinished trades count when their result is known: locked at -10%
+ * once hedged, or at the 8-hour price.
+ */
 export const scoreboard = (rows, setting = "t10_tp1") => {
   const out = {};
   for (const src of SOURCES) {
@@ -133,7 +144,8 @@ export const scoreboard = (rows, setting = "t10_tp1") => {
       if (!g || !dir) continue;
       t.graded++;
       t[g.story.toLowerCase()]++;
-      const trade = referenceTrade(dir, Number(r.grade.entry_price) || Number(r.entry_price), Number(r.grade.sl_distance), g.story, { hedge: g.hedge });
+      const trade = referenceTrade(dir, Number(r.grade.entry_price) || Number(r.entry_price), Number(r.grade.sl_distance), g.story,
+        { hedge: g.hedge ?? null, mae: g.mae ?? null, markPrice: markOf(r), trigger: triggerOf(r) });
       if (trade?.pnl != null) t.pnl += trade.pnl;
       if (trade?.slippage_pct != null) { t.slip_sum += trade.slippage_pct; t.slip_n++; t.slip_max = Math.max(t.slip_max, trade.slippage_pct); }
     }
@@ -141,11 +153,67 @@ export const scoreboard = (rows, setting = "t10_tp1") => {
     const { slip_sum, slip_n, slip_max, ...rest } = t;
     out[src] = {
       ...rest, resolved, pnl: Math.round(t.pnl * 100) / 100, a_rate: resolved ? Math.round((t.a / resolved) * 1000) / 10 : null,
+      a_rate_all: t.graded ? Math.round((t.a / t.graded) * 1000) / 10 : null,   // % of every trade, unfinished included
       hedges: slip_n, slippage_avg_pct: slip_n ? Math.round((slip_sum / slip_n) * 10) / 10 : null, slippage_max_pct: slip_n ? slip_max : null,
     };
   }
   return out;
 };
+/**
+ * TP without the hedge per day (UTC days that had signals), two ways:
+ *   every          every signal traded, even while earlier ones are still open
+ *   one_at_a_time  the next trade opens only once the last one has closed (or after
+ *                  8h if it never finished): what a single pair of accounts can do
+ */
+export const dailyBreakdown = (rows, setting = "t10_tp1") => {
+  const trades = rows.map((r) => {
+    const g = r.grade?.results?.ai?.[setting];
+    if (!g || !r.direction) return null;
+    const d = referenceTrade(r.direction, Number(r.grade.entry_price) || Number(r.entry_price), Number(r.grade.sl_distance), g.story,
+      { hedge: g.hedge ?? null, mae: g.mae ?? null, markPrice: markOf(r), trigger: triggerOf(r) });
+    return { t: new Date(r.created_at ?? r.moment).getTime(), story: g.story, hours: g.hours ?? 8, pnl: d?.pnl ?? null };
+  }).filter(Boolean).sort((a, b) => a.t - b.t);
+
+  let free = -Infinity;
+  const sequential = trades.filter((x) => {
+    if (x.t < free) return false;
+    free = x.t + x.hours * 3600 * 1000;
+    return true;
+  });
+
+  const dayOf = (t) => new Date(t).toISOString().slice(0, 10);
+  const tradingDays = [...new Set(trades.map((x) => dayOf(x.t)))];
+  const group = (list) => {
+    const byDay = new Map(tradingDays.map((date) => [date, { date, trades: 0, a: 0, b: 0, c: 0, x: 0, pnl: 0 }]));
+    for (const x of list) {
+      const d = byDay.get(dayOf(x.t));
+      d.trades++;
+      d[x.story.toLowerCase()]++;
+      if (x.pnl != null) d.pnl += x.pnl;
+    }
+    const days = [...byDay.values()].map((d) => ({ ...d, pnl: Math.round(d.pnl * 100) / 100 }));
+    const n = days.length || 1;
+    const sum = (k) => days.reduce((acc, d) => acc + d[k], 0);
+    return {
+      days,
+      summary: {
+        days: days.length,
+        trades_per_day: Math.round((sum("trades") / n) * 10) / 10,
+        a_per_day: Math.round((sum("a") / n) * 100) / 100,
+        pnl_per_day: Math.round((sum("pnl") / n) * 100) / 100,
+        best_day: days.reduce((m, d) => Math.max(m, d.a), 0),
+        days_by_tp: {
+          0: days.filter((d) => d.a === 0).length,
+          1: days.filter((d) => d.a === 1).length,
+          2: days.filter((d) => d.a === 2).length,
+          "3+": days.filter((d) => d.a >= 3).length,
+        },
+      },
+    };
+  };
+  return { every: group(trades), one_at_a_time: group(sequential) };
+};
+
 // Signals of the same direction within this window count as one independent call
 const INDEPENDENT_GAP_MS = 4 * 3600 * 1000;
 

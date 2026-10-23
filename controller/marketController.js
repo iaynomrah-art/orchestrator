@@ -6,7 +6,7 @@ import {
   TIMEFRAME_MAP,
 } from "../helper/marketHelper.js";
 import { generateSignal } from "../helper/signalHelper.js";
-import { summarizeGrades, scoreboard, referenceTrade, naturalTrade, strategyComparison, tradingCost, REFERENCE_RISK, MAX_AUTO_LOT } from "../helper/shadowResultsHelper.js";
+import { summarizeGrades, scoreboard, referenceTrade, naturalTrade, strategyComparison, dailyBreakdown, tradingCost, REFERENCE_RISK, MAX_AUTO_LOT } from "../helper/shadowResultsHelper.js";
 import { refreshTradingCost } from "../helper/tradingCostHelper.js";
 import { getVolatility } from "../helper/marketContextHelper.js";
 import { loadCandles } from "../helper/candleRecorder.js";
@@ -139,6 +139,7 @@ export const getShadowStatus = async (req, res, next) => {
       reference: { risk: REFERENCE_RISK, max_lot: MAX_AUTO_LOT, trigger_pct: 10, tp: "TP = SL distance", cost: tradingCost() },
       scoreboard: scoreboard(gradedRows),
       comparison: strategyComparison(gradedRows),
+      daily: dailyBreakdown(gradedRows),
       signals: (signals.data || []).map((s) => ({
         id: s.id, created_at: s.created_at, shadow: s.shadow, entry_price: s.entry_price,
         ai: s.direction, tv: s.tv_direction, coin: s.coin_direction, score: s.confidence, score_v2: s.score_v2,
@@ -166,49 +167,130 @@ export const getShadowStatus = async (req, res, next) => {
 };
 
 /**
- * Past-data test: AI signals made for past moments (only what was known then),
- * graded on what followed. Same scoreboard and trade rows as the live view.
+ * Past-data test: signals made for past moments (only what was known then), graded
+ * on what followed. Same scoreboard and trade rows as the live view, plus a
+ * side-by-side summary of every run (the AI prompts and the rule-based approaches).
+ * Rule runs also hold the moments the rule skipped (rule.passed = false): they are
+ * left out of the trades and summarised separately.
  * @route GET /api/v1/market/replay?run=v2-candles-6h
  */
+const REPLAY_CACHE_MS = 10 * 60 * 1000;
+const TRADE_LOG_LIMIT = 400;
+let replayCache = { at: 0, rows: null, loading: null };
+
+// Answers from the cache straight away; once it is older than REPLAY_CACHE_MS it is
+// refreshed in the background, so only the very first visit waits for the download.
+const loadReplayRows = async () => {
+  if (replayCache.rows && Date.now() - replayCache.at < REPLAY_CACHE_MS) return replayCache.rows;
+  if (!replayCache.loading) {
+    replayCache.loading = fetchReplayRows()
+      .then((rows) => { replayCache = { at: Date.now(), rows, loading: null }; return rows; })
+      .catch((error) => { replayCache.loading = null; throw error; });
+  }
+  if (replayCache.rows) {
+    replayCache.loading.catch((error) => console.warn(`[market] Replay refresh failed (showing the last results): ${error.message}`));
+    return replayCache.rows;
+  }
+  return replayCache.loading;
+};
+
+// Fill the cache a minute after start-up, so the first visit after a deploy doesn't wait either
+setTimeout(() => loadReplayRows().catch((error) => console.warn(`[market] Replay cache warm-up failed: ${error.message}`)), 60 * 1000).unref();
+
+const fetchReplayRows = async () => {
+  // Only the grade the page uses, not every setting: a much smaller download. That is the
+  // run's own setting ("main": its trigger, TP = SL) when it has one, else 10% / TP = SL.
+  // Paged by position (moment, id), not offset, so rows a running replay adds can't shift pages.
+  const all = [];
+  for (let last = null; ;) {
+    let query = supabase.from("replay_signals")
+      .select("id, run, moment, direction, tv_direction, coin_direction, confidence, entry_price, "
+        + "g_entry:grade->entry_price, g_sl:grade->sl_distance, g_mark:grade->mark_price, "
+        + "g_ai:grade->results->ai->t10_tp1, g_tv:grade->results->tv->t10_tp1, g_coin:grade->results->coin->t10_tp1, "
+        + "m_ai:grade->results->ai->main, m_tv:grade->results->tv->main, m_coin:grade->results->coin->main, "
+        + "picker:inputs->>picker, trigger:inputs->trigger, rule:inputs->rule")
+      .order("moment", { ascending: false }).order("id").limit(1000);
+    if (last) query = query.or(`moment.lt.${last.moment},and(moment.eq.${last.moment},id.gt.${last.id})`);
+    const { data, error } = await query;
+    if (error) throw new BadRequestError(`Could not read replay signals: ${error.message}`);
+    if (data.length) last = { moment: new Date(data[data.length - 1].moment).toISOString(), id: data[data.length - 1].id };
+    all.push(...data.map(({ g_entry, g_sl, g_mark, g_ai, g_tv, g_coin, m_ai, m_tv, m_coin, ...r }) => ({
+      ...r,
+      trigger: Number(r.trigger) || 0.1,
+      grade: {
+        entry_price: g_entry, sl_distance: g_sl, mark_price: g_mark,
+        results: Object.fromEntries([["ai", m_ai ?? g_ai], ["tv", m_tv ?? g_tv], ["coin", m_coin ?? g_coin]].filter(([, g]) => g).map(([k, g]) => [k, { main: g }])),
+      },
+    })));
+    if (data.length < 1000) break;
+  }
+  return all;
+};
+
+/** One run's headline numbers for the approach comparison. */
+const approachSummary = (run, rows) => {
+  const taken = rows.filter((r) => r.rule?.passed !== false);
+  const skipped = rows.filter((r) => r.rule?.passed === false);
+  const board = scoreboard(taken, "main"), cmp = strategyComparison(taken, "main"), daily = dailyBreakdown(taken, "main");
+  const perTrade = (v, n) => (n ? Math.round((v / n) * 100) / 100 : null);
+  const pick = (t) => ({ graded: t.graded, a: t.a, b: t.b, c: t.c, x: t.x, resolved: t.resolved, a_rate: t.a_rate, a_rate_all: t.a_rate_all });
+  const rule = rows.find((r) => r.rule)?.rule ?? null;
+  const sl = taken.map((r) => Number(r.grade?.sl_distance)).filter((v) => v > 0);
+  let skippedSummary = null;
+  if (skipped.length) {
+    const sb = scoreboard(skipped, "main").ai, sc = strategyComparison(skipped, "main");
+    skippedSummary = { moments: skipped.length, ...pick(sb), delayed_per_trade: perTrade(sc.delayed.net, sc.trades) };
+  }
+  return {
+    run, picker: rows[0]?.picker ?? "ai", trigger: rows[0]?.trigger ?? 0.1,
+    rule: rule && { name: rule.name, f: rule.f, target: rule.target, lot: rule.lot, budget: rule.budget, sl_distance: rule.sl_distance, stop: rule.stop },
+    moments: rows.length, trades: taken.length,
+    from: rows[rows.length - 1]?.moment, to: rows[0]?.moment,
+    avg_sl: sl.length ? Math.round((sl.reduce((x, y) => x + y, 0) / sl.length) * 100) / 100 : null,
+    main: pick(board.ai), coin: pick(board.coin),
+    delayed_per_trade: perTrade(cmp.delayed.net, cmp.trades), natural_per_trade: perTrade(cmp.natural.net, cmp.trades),
+    delayed_total: cmp.delayed.net, natural_total: cmp.natural.net, priced_trades: cmp.trades,
+    skipped: skippedSummary,
+    per_day: { every: daily.every.summary, one_at_a_time: daily.one_at_a_time.summary },
+  };
+};
+
 export const getReplayResults = async (req, res, next) => {
   try {
     await refreshTradingCost();
-    const all = [];
-    for (let from = 0; ; from += 1000) {
-      const { data, error } = await supabase.from("replay_signals")
-        .select("id, run, moment, direction, tv_direction, coin_direction, confidence, entry_price, grade")
-        .order("moment", { ascending: false }).range(from, from + 999);
-      if (error) throw new BadRequestError(`Could not read replay signals: ${error.message}`);
-      all.push(...data);
-      if (data.length < 1000) break;
-    }
-    const runs = [...new Set(all.map((r) => r.run))].map((run) => {
-      const rows = all.filter((r) => r.run === run);
-      return { run, signals: rows.length, from: rows[rows.length - 1]?.moment, to: rows[0]?.moment };
-    });
-    const run = runs.some((r) => r.run === req.query.run) ? req.query.run : runs[runs.length - 1]?.run ?? null;
-    const rows = all.filter((r) => r.run === run);
+    const all = await loadReplayRows();
+    const byRun = new Map();
+    for (const r of all) { if (!byRun.has(r.run)) byRun.set(r.run, []); byRun.get(r.run).push(r); }
+    const approaches = [...byRun].map(([run, rows]) => approachSummary(run, rows));
+    const runs = approaches.map((a) => ({ run: a.run, signals: a.trades, from: a.from, to: a.to }));
+    const run = byRun.has(req.query.run) ? req.query.run : runs[runs.length - 1]?.run ?? null;
+    const rows = (byRun.get(run) ?? []).filter((r) => r.rule?.passed !== false);
 
-    const story = (r, src) => r.grade?.results?.[src]?.t10_tp1?.story ?? null;
+    const story = (r, src) => r.grade?.results?.[src]?.main?.story ?? null;
     const tradeFor = (r, src, dir) => {
-      const g = r.grade?.results?.[src]?.t10_tp1;
+      const g = r.grade?.results?.[src]?.main;
       return g ? referenceTrade(dir, Number(r.grade.entry_price) || Number(r.entry_price), Number(r.grade.sl_distance), g.story,
-        { mae: g.mae ?? null, markPrice: Number(r.grade.mark_price) || null, hedge: g.hedge ?? null }) : null;
+        { mae: g.mae ?? null, markPrice: Number(r.grade.mark_price) || null, hedge: g.hedge ?? null, trigger: r.trigger }) : null;
     };
+    const trigger = rows[0]?.trigger ?? 0.1;
     res.status(200).json({
-      runs, run,
-      reference: { risk: REFERENCE_RISK, max_lot: MAX_AUTO_LOT, trigger_pct: 10, tp: "TP = SL distance", cost: tradingCost() },
-      scoreboard: scoreboard(rows),
-      comparison: strategyComparison(rows),
-      signals: rows.map((r) => ({
+      runs, run, approaches,
+      picker: rows[0]?.picker ?? "ai",
+      reference: { risk: REFERENCE_RISK, max_lot: MAX_AUTO_LOT, trigger_pct: Math.round(trigger * 100), tp: "TP = SL distance", cost: tradingCost() },
+      scoreboard: scoreboard(rows, "main"),
+      comparison: strategyComparison(rows, "main"),
+      daily: dailyBreakdown(rows, "main"),
+      signals_total: rows.length,
+      signals: rows.slice(0, TRADE_LOG_LIMIT).map((r) => ({
         id: r.id, created_at: r.moment, shadow: true, entry_price: r.entry_price,
         ai: r.direction, tv: r.tv_direction, coin: r.coin_direction, score: r.confidence, graded_at: r.moment, skipped: null,
         outcome: { ai: story(r, "ai"), tv: story(r, "tv"), coin: story(r, "coin") },
-        hours: r.grade?.results?.ai?.t10_tp1?.hours ?? (story(r, "ai") === "X" ? 8 : null),
+        hours: r.grade?.results?.ai?.main?.hours ?? (story(r, "ai") === "X" ? 8 : null),
         trade: tradeFor(r, "ai", r.direction),
         natural: naturalTrade(r.direction, Number(r.grade?.entry_price) || Number(r.entry_price), Number(r.grade?.sl_distance), story(r, "ai"),
           { markPrice: Number(r.grade?.mark_price) || null }),
         compare: { tv: tradeFor(r, "tv", r.tv_direction)?.pnl ?? null, coin: tradeFor(r, "coin", r.coin_direction)?.pnl ?? null },
+        rule: r.rule?.range != null ? { support: r.rule.support, resistance: r.rule.resistance, range: r.rule.range, window_hours: r.rule.window_hours, pump_dump: r.rule.pump_dump } : null,
       })),
     });
   } catch (error) {
