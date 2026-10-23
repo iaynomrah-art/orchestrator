@@ -15,16 +15,23 @@ export const walk = (candles, i0, direction, slD, tpD, trigger, horizonSec) => {
   const tp = p0 + s * tpD, sl = p0 - s * slD, trig = p0 - s * trigger * slD;
   const end = candles.time[i0] + horizonSec;
   const bar = candles.time.length > i0 + 1 ? candles.time[i0 + 1] - candles.time[i0] : 60;
-  let hedged = false, worst = 0;
+  let hedged = false, worst = 0, hedge = null;
   for (let j = i0; j < candles.time.length && candles.time[j] < end; j++) {
     if (j > i0 && candles.time[j] - candles.time[j - 1] > WEEKEND_GAP_SEC) break;   // not carried over a weekend
     const o = candles.open[j], h = candles.high[j], l = candles.low[j], c = candles.close[j];
-    for (const px of c >= o ? [o, l, h, c] : [o, h, l, c]) {
+    const path = c >= o ? [o, l, h, c] : [o, h, l, c];
+    for (let k = 0; k < path.length; k++) {
+      const px = path[k];
       worst = Math.max(worst, ((p0 - px) * s) / slD);
       let story = null;
       if (!hedged) {
         if ((px - tp) * s >= 0) story = "A";
-        else if ((trig - px) * s >= 0) hedged = true;
+        else if ((trig - px) * s >= 0) {
+          hedged = true;
+          // A pending stop fills at the trigger; if the candle opened already past it (a jump), at that open
+          const fill = k === 0 && j > i0 ? px : trig;
+          hedge = { price: Math.round(fill * 100) / 100, hours: Math.round(((candles.time[j] - candles.time[i0]) / 3600) * 100) / 100 };
+        }
       }
       if (hedged && !story) {
         if ((sl - px) * s >= 0) story = "B";
@@ -32,11 +39,11 @@ export const walk = (candles, i0, direction, slD, tpD, trigger, horizonSec) => {
       }
       if (story) {
         const hours = (candles.time[j] + bar - candles.time[i0]) / 3600;
-        return { story, hours: Math.round(hours * 100) / 100, mae: Math.round(Math.min(worst, 1) * 1000) / 1000 };
+        return { story, hours: Math.round(hours * 100) / 100, mae: Math.round(Math.min(worst, 1) * 1000) / 1000, ...(hedge && { hedge }) };
       }
     }
   }
-  return { story: "X", hours: null, mae: Math.round(Math.min(worst, 1) * 1000) / 1000 };
+  return { story: "X", hours: null, mae: Math.round(Math.min(worst, 1) * 1000) / 1000, ...(hedge && { hedge }) };
 };
 
 /** Every source (ai / tv / coin) at every setting (t10/t15 x AI's TP / TP = SL). */

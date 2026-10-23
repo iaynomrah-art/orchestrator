@@ -14,9 +14,8 @@ import {
 import { getMarketContext, describeContext, getSupportResistanceChecks } from "./marketContextHelper.js";
 import { getCandleSummary, describeCandles } from "./candleContext.js";
 
-// Prompt with the "last 6 hours of 5-minute candles" lines (PROMPT_CANDLE_CONTEXT=true).
-// Off by default; each signal saves which prompt it used, so results can be split by it.
-const candleContextOn = () => process.env.PROMPT_CANDLE_CONTEXT === "true";
+// The prompt includes the "last 6 hours of 5-minute candles" lines whenever recorded
+// candles are available; each signal saves which prompt it used (prompt_version).
 
 // Real signal requests in progress: the shadow job skips its turn while one runs,
 // so it never makes a user wait on the single Ollama CPU slot.
@@ -54,7 +53,7 @@ export const generateSignal = async ({ symbol = "XAUUSD", timeframe = "1h", shad
       getMarketContext(targetSymbol),
     ]);
     const currentUtcTime = new Date().toUTCString();
-    const candleSummary = candleContextOn() ? await getCandleSummary(targetSymbol).catch(() => null) : null;
+    const candleSummary = await getCandleSummary(targetSymbol).catch(() => null);
 
     const aiResponse = await askOllama(
       targetSymbol,

@@ -6,7 +6,7 @@ import {
   TIMEFRAME_MAP,
 } from "../helper/marketHelper.js";
 import { generateSignal } from "../helper/signalHelper.js";
-import { summarizeGrades, scoreboard, referenceTrade, REFERENCE_RISK, MAX_AUTO_LOT } from "../helper/shadowResultsHelper.js";
+import { summarizeGrades, scoreboard, referenceTrade, naturalTrade, strategyComparison, REFERENCE_RISK, MAX_AUTO_LOT } from "../helper/shadowResultsHelper.js";
 import { getVolatility } from "../helper/marketContextHelper.js";
 import { loadCandles } from "../helper/candleRecorder.js";
 
@@ -83,7 +83,7 @@ export const getShadowStatus = async (req, res, next) => {
     const gradedRows = [];
     for (let from = 0; ; from += 1000) {
       const { data, error } = await supabase.from("market_signals")
-        .select("direction, tv_direction, coin_direction, entry_price, grade")
+        .select("created_at, direction, tv_direction, coin_direction, entry_price, grade")
         .eq("shadow", true).not("graded_at", "is", null).range(from, from + 999);
       if (error) throw new BadRequestError(error.message);
       gradedRows.push(...data);
@@ -136,6 +136,7 @@ export const getShadowStatus = async (req, res, next) => {
       counts: { shadow: totals.count ?? 0, graded: graded.count ?? 0 },
       reference: { risk: REFERENCE_RISK, max_lot: MAX_AUTO_LOT, trigger_pct: 10, tp: "TP = SL distance" },
       scoreboard: scoreboard(gradedRows),
+      comparison: strategyComparison(gradedRows),
       signals: (signals.data || []).map((s) => ({
         id: s.id, created_at: s.created_at, shadow: s.shadow, entry_price: s.entry_price,
         ai: s.direction, tv: s.tv_direction, coin: s.coin_direction, score: s.confidence, score_v2: s.score_v2,
@@ -144,9 +145,68 @@ export const getShadowStatus = async (req, res, next) => {
         hours: s.grade?.results?.ai?.t10_tp1?.hours ?? (outcome(s.grade, "ai") === "X" ? 8 : null),
         trade: referenceTrade(s.direction, entryOf(s), slDistance(s), outcome(s.grade, "ai"), {
           mae: s.grade?.results?.ai?.t10_tp1?.mae ?? null, markPrice: markPrices[s.id] ?? null,
+          hedge: s.grade?.results?.ai?.t10_tp1?.hedge ?? null,
         }),
+        natural: naturalTrade(s.direction, entryOf(s), slDistance(s), outcome(s.grade, "ai"), { markPrice: markPrices[s.id] ?? null }),
+        // Same trade had the rating / coin flip picked the direction: net $ of the pair
+        compare: Object.fromEntries(["tv", "coin"].map((src) => {
+          const g = s.grade?.results?.[src]?.t10_tp1;
+          const dir = src === "tv" ? s.tv_direction : s.coin_direction;
+          const t = g && dir && g.story !== "X" ? referenceTrade(dir, entryOf(s), slDistance(s), g.story, { hedge: g.hedge ?? null }) : null;
+          return [src, t?.pnl ?? null];
+        })),
       })),
       replay,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Past-data test: AI signals made for past moments (only what was known then),
+ * graded on what followed. Same scoreboard and trade rows as the live view.
+ * @route GET /api/v1/market/replay?run=v2-candles-6h
+ */
+export const getReplayResults = async (req, res, next) => {
+  try {
+    const all = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await supabase.from("replay_signals")
+        .select("id, run, moment, direction, tv_direction, coin_direction, confidence, entry_price, grade")
+        .order("moment", { ascending: false }).range(from, from + 999);
+      if (error) throw new BadRequestError(`Could not read replay signals: ${error.message}`);
+      all.push(...data);
+      if (data.length < 1000) break;
+    }
+    const runs = [...new Set(all.map((r) => r.run))].map((run) => {
+      const rows = all.filter((r) => r.run === run);
+      return { run, signals: rows.length, from: rows[rows.length - 1]?.moment, to: rows[0]?.moment };
+    });
+    const run = runs.some((r) => r.run === req.query.run) ? req.query.run : runs[runs.length - 1]?.run ?? null;
+    const rows = all.filter((r) => r.run === run);
+
+    const story = (r, src) => r.grade?.results?.[src]?.t10_tp1?.story ?? null;
+    const tradeFor = (r, src, dir) => {
+      const g = r.grade?.results?.[src]?.t10_tp1;
+      return g ? referenceTrade(dir, Number(r.grade.entry_price) || Number(r.entry_price), Number(r.grade.sl_distance), g.story,
+        { mae: g.mae ?? null, markPrice: Number(r.grade.mark_price) || null, hedge: g.hedge ?? null }) : null;
+    };
+    res.status(200).json({
+      runs, run,
+      reference: { risk: REFERENCE_RISK, max_lot: MAX_AUTO_LOT, trigger_pct: 10, tp: "TP = SL distance" },
+      scoreboard: scoreboard(rows),
+      comparison: strategyComparison(rows),
+      signals: rows.map((r) => ({
+        id: r.id, created_at: r.moment, shadow: true, entry_price: r.entry_price,
+        ai: r.direction, tv: r.tv_direction, coin: r.coin_direction, score: r.confidence, graded_at: r.moment, skipped: null,
+        outcome: { ai: story(r, "ai"), tv: story(r, "tv"), coin: story(r, "coin") },
+        hours: r.grade?.results?.ai?.t10_tp1?.hours ?? (story(r, "ai") === "X" ? 8 : null),
+        trade: tradeFor(r, "ai", r.direction),
+        natural: naturalTrade(r.direction, Number(r.grade?.entry_price) || Number(r.entry_price), Number(r.grade?.sl_distance), story(r, "ai"),
+          { markPrice: Number(r.grade?.mark_price) || null }),
+        compare: { tv: tradeFor(r, "tv", r.tv_direction)?.pnl ?? null, coin: tradeFor(r, "coin", r.coin_direction)?.pnl ?? null },
+      })),
     });
   } catch (error) {
     next(error);

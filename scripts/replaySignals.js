@@ -17,6 +17,7 @@ import { askOllama, scoreSignal } from "../helper/marketHelper.js";
 import { summarizeGrades } from "../helper/shadowResultsHelper.js";
 import { gradeAll } from "../helper/gradeHelper.js";
 import { summarizeCandles, describeCandles, CANDLE_HOURS } from "../helper/candleContext.js";
+import { replayRecord, saveReplay } from "./replayStore.js";
 
 const arg = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -29,6 +30,8 @@ const OUT = arg("out", "replay.jsonl");
 let seed = Number(arg("seed", 7));
 // --candles: add the "last 6 hours of 5-minute candles" lines to the prompt (prompt v2)
 const WITH_CANDLES = process.argv.includes("--candles");
+// --save: also store each result in replay_signals (the dashboard's "Past data" view)
+const SAVE = process.argv.includes("--save");
 if (!M5_PATH || !H1_PATH) {
   console.error("Usage: node scripts/replaySignals.js --m5 <M5.csv> --h1 <H1.csv> [--n 150] [--out replay.jsonl]");
   process.exit(1);
@@ -223,6 +226,7 @@ for (const { t, i0 } of picked) {
     grade: { sl_distance: slD, tp_distance: tpD, entry_broker: m5.open[i0], results: gradeAll(m5, i0, dirs, slD, tpD, 8 * 3600) },
   };
   fs.appendFileSync(OUT, JSON.stringify(row) + "\n");
+  if (SAVE) await saveReplay([replayRecord(row, m5, i0, row.prompt)]).catch((e) => console.error(`  ${e.message}`));
   count++;
   const g = row.grade.results;
   console.log(`[${count}/${picked.length}] ${row.created_at.slice(0, 16)} AI ${direction.padEnd(4)} (rating ${dirs.tv}) score ${score} -> AI ${g.ai.t10_tp1.story}, rating ${g.tv.t10_tp1.story}, coin ${g.coin.t10_tp1.story}`);
