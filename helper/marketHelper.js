@@ -193,22 +193,33 @@ CURRENT SYSTEM TIME: ${currentUtcTime}
 CURRENT PRICE: ${currentPrice}
 200 SMA (Long Term Trend): ${microData.sma_200}
 ATR (Volatility): ${atr}
-
+${microData.support1 && microData.resistance1 ? `PIVOT LEVELS: Support (S1) = ${microData.support1} | Resistance (R1) = ${microData.resistance1}\n` : ""}
 [1] MACRO TREND (${macroTf}): ${macroData.decision}
 [2] MICRO TREND (${microTf}): ${microData.decision}
 
 LATEST HEADLINES:
 ${(headlines && headlines.length ? headlines : ["(none available)"]).map((h) => `- ${h}`).join("\n")}
-${contextLines.length ? `\nMARKET CONDITIONS:\n${contextLines.map((l) => `- ${l}`).join("\n")}\n` : ""}${candleLines.length ? `\nLAST 6 HOURS (5-minute candles):\n${candleLines.map((l) => `- ${l}`).join("\n")}\n` : ""}
-DECISION LOGIC (Execute strictly for short-term ${microTf} horizon):
-1. TREND ALIGNMENT: Prioritize the Micro Trend (${microTf}) if the current price is above the 200 SMA (for BUY) or below the 200 SMA (for SELL).
-2. NEWS IMPACT: Judge whether the headlines support your verdict for ${symbol}, go against it, or are not relevant.
-${candleLines.length ? "3. 6-HOUR CANDLES: Judge whether the last 6 hours are bullish or bearish, and favour that direction for a 4-8 hour trade.\n" : ""}
+${contextLines.length ? `\nMARKET CONDITIONS:\n${contextLines.map((l) => `- ${l}`).join("\n")}\n` : ""}${candleLines.length ? `\nLAST 6 HOURS (5-minute candles & S/R Structure):\n${candleLines.map((l) => `- ${l}`).join("\n")}\n` : ""}
+DECISION LOGIC (Follow these steps in strict order):
+STEP 1: S/R BOUNDARY OVERRIDE (HIGHEST PRIORITY):
+- If Current Price Location is NEAR SUPPORT (Range Floor, bottom 25% of range):
+  You MUST output "BUY" (trading the bounce off support).
+  Do NOT output "SELL" under any circumstances, even if micro and macro trends are bearish. Selling at the bottom of the range is strictly prohibited.
+- If Current Price Location is NEAR RESISTANCE (Range Ceiling, top 25% of range):
+  You MUST output "SELL" (trading the rejection off resistance).
+  Do NOT output "BUY" under any circumstances, even if micro and macro trends are bullish. Buying at the top of the range is strictly prohibited.
+
+STEP 2: TREND CONTINUATION (Only if price is in the MIDDLE OF RANGE / 25%-75%):
+- Align with the Micro Trend (${microTf}) and 200 SMA only when price is not near an opposing boundary.
+
+STEP 3: NEWS IMPACT:
+- Judge whether the headlines support your verdict for ${symbol}, go against it, or are not relevant.
+
 Respond strictly in JSON format matching this exact schema. Do not output markdown code blocks, just the raw JSON:
 {
   "verdict": "BUY", // MUST BE EXACTLY ONE WORD: either "BUY" or "SELL". No sentences.
   "news_impact": "neutral", // MUST BE EXACTLY ONE WORD: "supports", "against" or "neutral".
-  "reasoning": "Short 2-sentence explanation."
+  "reasoning": "Short 2-sentence explanation mentioning price position relative to support/resistance."
 }
 `;
 
@@ -346,6 +357,26 @@ export const scoreSignalV2 = (direction, microData, macroData, newsImpact, ctx =
   const blocks = [];
   if (ctx.news?.length) blocks.push(`High-impact news: ${ctx.news.map((e) => `${e.country} ${e.title} ${e.at.slice(11, 16)} UTC`).join(", ")}`);
   if (ctx.rollover) blocks.push("Rollover hours (thin market, wide spreads)");
+
+  // S/R alignment and trap detection
+  if (ctx.candleSummary?.range_position_pct != null) {
+    const isBuy = direction === "BUY";
+    const pos = ctx.candleSummary.range_position_pct;
+    const isNearSupport = pos <= 25;
+    const isNearResistance = pos >= 75;
+
+    if (isBuy && isNearSupport) {
+      checks.push({ check: "Support bounce: buying near 6h range floor", points: 15, passed: true });
+    } else if (!isBuy && isNearResistance) {
+      checks.push({ check: "Resistance rejection: selling near 6h range ceiling", points: 15, passed: true });
+    } else if (!isBuy && isNearSupport) {
+      checks.push({ check: "S/R trap: selling directly into support floor", points: -25, passed: true });
+      blocks.push(`Selling at range support (${pos}% of 6h range): high risk of immediate bounce`);
+    } else if (isBuy && isNearResistance) {
+      checks.push({ check: "S/R trap: buying directly into resistance ceiling", points: -25, passed: true });
+      blocks.push(`Buying at range resistance (${pos}% of 6h range): high risk of immediate rejection`);
+    }
+  }
 
   const total = checks.reduce((sum, c) => sum + (c.passed ? c.points : 0), 0);
   return { score: Math.max(0, Math.min(100, total)), breakdown: checks, blocks };

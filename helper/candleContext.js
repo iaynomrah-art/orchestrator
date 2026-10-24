@@ -51,11 +51,22 @@ export const summarizeCandles = (bars) => {
 
 const signed = (x) => `${x >= 0 ? "+" : "-"}$${Math.abs(x).toFixed(2)}`;
 
-export const describeCandles = (s) => s ? [
-  `Price moved ${signed(s.change)} (${s.from.toFixed(2)} -> ${s.to.toFixed(2)}); ${s.bullish_pct}% of candles were bullish`,
-  `Structure: ${s.structure}`,
-  `Last hour: ${signed(s.last_hour_change)}; price is at ${s.range_position_pct}% of the 6-hour range (${s.range_low.toFixed(2)}-${s.range_high.toFixed(2)})`,
-] : [];
+export const describeCandles = (s) => {
+  if (!s) return [];
+  const span = Math.round((s.range_high - s.range_low) * 100) / 100;
+  const zone = s.range_position_pct <= 25
+    ? "NEAR SUPPORT (Range Floor - Bounce Zone)"
+    : s.range_position_pct >= 75
+      ? "NEAR RESISTANCE (Range Ceiling - Rejection Zone)"
+      : "MIDDLE OF RANGE (Chop Zone)";
+  return [
+    `Price moved ${signed(s.change)} (${s.from.toFixed(2)} -> ${s.to.toFixed(2)}); ${s.bullish_pct}% of candles were bullish`,
+    `Structure: ${s.structure}`,
+    `6-Hour Range: Support (Floor) = $${s.range_low.toFixed(2)}, Resistance (Ceiling) = $${s.range_high.toFixed(2)} (Range Span: $${span.toFixed(2)})`,
+    `Current Price Location: ${s.range_position_pct}% of the range [${zone}]`,
+    `Last hour move: ${signed(s.last_hour_change)}`,
+  ];
+};
 
 /** Live: the summary from the orchestrator's recorded 1-minute candles. */
 export const getCandleSummary = async (symbol, now = Date.now()) => {

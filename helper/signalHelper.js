@@ -68,10 +68,34 @@ export const generateSignal = async ({ symbol = "XAUUSD", timeframe = "1h", shad
     );
 
     // askOllama always returns BUY or SELL (falling back to the technicals itself)
-    const finalAction = aiResponse.verdict;
+    let finalAction = aiResponse.verdict;
+    let reasoning = aiResponse.reasoning || null;
+    let targetPrice = aiResponse.target_price ?? null;
+    let stopPrice = aiResponse.stop_loss ?? null;
+
+    // Strict Support & Resistance Guardrail:
+    // Strictly forbid selling at support floor or buying at resistance ceiling.
+    if (candleSummary?.range_position_pct != null) {
+      const pos = candleSummary.range_position_pct;
+      const currentPrice = Number(microData.price);
+      const atr = Number(microData.atr);
+
+      if (finalAction === "SELL" && pos <= 20) {
+        finalAction = "BUY";
+        targetPrice = Math.round((currentPrice + 2.0 * atr) * 100) / 100;
+        stopPrice = Math.round((currentPrice - 1.5 * atr) * 100) / 100;
+        reasoning = `[S/R Bounce Enforced]: Price is at ${pos}% of range (Support $${candleSummary.range_low.toFixed(2)}). Selling into the floor was strictly overridden to BUY bounce. ${reasoning || ""}`;
+      } else if (finalAction === "BUY" && pos >= 80) {
+        finalAction = "SELL";
+        targetPrice = Math.round((currentPrice - 2.0 * atr) * 100) / 100;
+        stopPrice = Math.round((currentPrice + 1.5 * atr) * 100) / 100;
+        reasoning = `[S/R Rejection Enforced]: Price is at ${pos}% of range (Resistance $${candleSummary.range_high.toFixed(2)}). Buying into the ceiling was strictly overridden to SELL rejection. ${reasoning || ""}`;
+      }
+    }
+
     const { score, breakdown } = scoreSignal(finalAction, microData, macroData, aiResponse.news_impact);
-    const slDistance = Math.abs(Number(microData.price) - Number(aiResponse.stop_loss));
-    const v2 = scoreSignalV2(finalAction, microData, macroData, aiResponse.news_impact, { ...context, slDistance });
+    const slDistance = Math.abs(Number(microData.price) - Number(stopPrice));
+    const v2 = scoreSignalV2(finalAction, microData, macroData, aiResponse.news_impact, { ...context, slDistance, candleSummary });
     // Tracked only (not in the score): graded later to see if these levels avoid the hedge trigger
     const supportResistance = await getSupportResistanceChecks(targetSymbol, Number(microData.price), finalAction.toLowerCase(), slDistance)
       .catch(() => null);
@@ -82,11 +106,11 @@ export const generateSignal = async ({ symbol = "XAUUSD", timeframe = "1h", shad
     const signalRecord = {
       symbol: targetSymbol,
       direction: finalAction.toLowerCase(),
-      reasoning: aiResponse.reasoning || null,
+      reasoning,
       confidence: score,
       entry_price: microData.price,
-      target_price: aiResponse.target_price ?? null,
-      stop_price: aiResponse.stop_loss ?? null,
+      target_price: targetPrice,
+      stop_price: stopPrice,
       source: aiResponse.source,
       model: aiResponse.model,
       shadow,
@@ -115,7 +139,7 @@ export const generateSignal = async ({ symbol = "XAUUSD", timeframe = "1h", shad
         news_ahead: context.news,
         hedge_block: v2.blocks,
         support_resistance: supportResistance,
-        prompt_version: candleSummary ? "v2-candles-6h" : "v1",
+        prompt_version: candleSummary ? "v3-sr-aware" : "v1",
         candle_summary: candleSummary,
       },
     };
@@ -130,8 +154,8 @@ export const generateSignal = async ({ symbol = "XAUUSD", timeframe = "1h", shad
       signalRecord,
       response: {
         action: finalAction,
-        target: aiResponse.target_price,
-        stop: aiResponse.stop_loss,
+        target: targetPrice,
+        stop: stopPrice,
         support1: microData.support1,
         support2: microData.support2,
         resistance1: microData.resistance1,
