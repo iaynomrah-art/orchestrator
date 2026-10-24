@@ -5,9 +5,7 @@ import {
   fetchTechnicalData,
   TIMEFRAME_MAP,
 } from "../helper/marketHelper.js";
-import { generateSignal } from "../helper/signalHelper.js";
-import { summarizeGrades, scoreboard, referenceTrade, naturalTrade, strategyComparison, dailyBreakdown, tradingCost, REFERENCE_RISK, MAX_AUTO_LOT } from "../helper/shadowResultsHelper.js";
-import { refreshTradingCost } from "../helper/tradingCostHelper.js";
+import { summarizeGrades, scoreboard, referenceTrade, naturalTrade, strategyComparison, dailyBreakdown, tradingCost, REFERENCE_RISK, MAX_AUTO_LOT, getTradeDiagnostic } from "../helper/shadowResultsHelper.js";
 import { getVolatility } from "../helper/marketContextHelper.js";
 import { loadCandles } from "../helper/candleRecorder.js";
 
@@ -140,25 +138,33 @@ export const getShadowStatus = async (req, res, next) => {
       scoreboard: scoreboard(gradedRows),
       comparison: strategyComparison(gradedRows),
       daily: dailyBreakdown(gradedRows),
-      signals: (signals.data || []).map((s) => ({
-        id: s.id, created_at: s.created_at, shadow: s.shadow, entry_price: s.entry_price,
-        ai: s.direction, tv: s.tv_direction, coin: s.coin_direction, score: s.confidence, score_v2: s.score_v2,
-        graded_at: s.graded_at, skipped: s.grade?.skipped ?? null,
-        outcome: { ai: outcome(s.grade, "ai"), tv: outcome(s.grade, "tv"), coin: outcome(s.grade, "coin") },
-        hours: s.grade?.results?.ai?.t10_tp1?.hours ?? (outcome(s.grade, "ai") === "X" ? 8 : null),
-        trade: referenceTrade(s.direction, entryOf(s), slDistance(s), outcome(s.grade, "ai"), {
+      signals: (signals.data || []).map((s) => {
+        const outAi = outcome(s.grade, "ai");
+        const entry = entryOf(s);
+        const slD = slDistance(s);
+        const trade = referenceTrade(s.direction, entry, slD, outAi, {
           mae: s.grade?.results?.ai?.t10_tp1?.mae ?? null, markPrice: markPrices[s.id] ?? null,
           hedge: s.grade?.results?.ai?.t10_tp1?.hedge ?? null,
-        }),
-        natural: naturalTrade(s.direction, entryOf(s), slDistance(s), outcome(s.grade, "ai"), { markPrice: markPrices[s.id] ?? null }),
-        // Same trade had the rating / coin flip picked the direction: net $ of the pair
-        compare: Object.fromEntries(["tv", "coin"].map((src) => {
-          const g = s.grade?.results?.[src]?.t10_tp1;
-          const dir = src === "tv" ? s.tv_direction : s.coin_direction;
-          const t = g && dir && g.story !== "X" ? referenceTrade(dir, entryOf(s), slDistance(s), g.story, { hedge: g.hedge ?? null }) : null;
-          return [src, t?.pnl ?? null];
-        })),
-      })),
+        });
+        const rule = s.inputs?.support_resistance?.h24 ?? s.inputs?.support_resistance?.h8 ?? null;
+        return {
+          id: s.id, created_at: s.created_at, shadow: s.shadow, entry_price: s.entry_price,
+          ai: s.direction, tv: s.tv_direction, coin: s.coin_direction, score: s.confidence, score_v2: s.score_v2,
+          graded_at: s.graded_at, skipped: s.grade?.skipped ?? null,
+          outcome: { ai: outAi, tv: outcome(s.grade, "tv"), coin: outcome(s.grade, "coin") },
+          hours: s.grade?.results?.ai?.t10_tp1?.hours ?? (outAi === "X" ? 8 : null),
+          trade,
+          natural: naturalTrade(s.direction, entry, slD, outAi, { markPrice: markPrices[s.id] ?? null }),
+          // Same trade had the rating / coin flip picked the direction: net $ of the pair
+          compare: Object.fromEntries(["tv", "coin"].map((src) => {
+            const g = s.grade?.results?.[src]?.t10_tp1;
+            const dir = src === "tv" ? s.tv_direction : s.coin_direction;
+            const t = g && dir && g.story !== "X" ? referenceTrade(dir, entry, slD, g.story, { hedge: g.hedge ?? null }) : null;
+            return [src, t?.pnl ?? null];
+          })),
+          diagnostic: getTradeDiagnostic({ time: s.created_at, entry, rule, story: outAi, hedged: trade?.hedged ?? false, direction: s.direction }),
+        };
+      }),
       replay,
     });
   } catch (error) {
@@ -280,18 +286,23 @@ export const getReplayResults = async (req, res, next) => {
       scoreboard: scoreboard(rows, "main"),
       comparison: strategyComparison(rows, "main"),
       daily: dailyBreakdown(rows, "main"),
-      signals_total: rows.length,
-      signals: rows.slice(0, TRADE_LOG_LIMIT).map((r) => ({
-        id: r.id, created_at: r.moment, shadow: true, entry_price: r.entry_price,
-        ai: r.direction, tv: r.tv_direction, coin: r.coin_direction, score: r.confidence, graded_at: r.moment, skipped: null,
-        outcome: { ai: story(r, "ai"), tv: story(r, "tv"), coin: story(r, "coin") },
-        hours: r.grade?.results?.ai?.main?.hours ?? (story(r, "ai") === "X" ? 8 : null),
-        trade: tradeFor(r, "ai", r.direction),
-        natural: naturalTrade(r.direction, Number(r.grade?.entry_price) || Number(r.entry_price), Number(r.grade?.sl_distance), story(r, "ai"),
-          { markPrice: Number(r.grade?.mark_price) || null }),
-        compare: { tv: tradeFor(r, "tv", r.tv_direction)?.pnl ?? null, coin: tradeFor(r, "coin", r.coin_direction)?.pnl ?? null },
-        rule: r.rule?.range != null ? { support: r.rule.support, resistance: r.rule.resistance, range: r.rule.range, window_hours: r.rule.window_hours, pump_dump: r.rule.pump_dump } : null,
-      })),
+      signals: rows.slice(0, TRADE_LOG_LIMIT).map((r) => {
+        const trade = tradeFor(r, "ai", r.direction);
+        const storyAi = story(r, "ai");
+        const entry = Number(r.grade?.entry_price) || Number(r.entry_price);
+        return {
+          id: r.id, created_at: r.moment, shadow: true, entry_price: r.entry_price,
+          ai: r.direction, tv: r.tv_direction, coin: r.coin_direction, score: r.confidence, graded_at: r.moment, skipped: null,
+          outcome: { ai: storyAi, tv: story(r, "tv"), coin: story(r, "coin") },
+          hours: r.grade?.results?.ai?.main?.hours ?? (storyAi === "X" ? 8 : null),
+          trade,
+          natural: naturalTrade(r.direction, entry, Number(r.grade?.sl_distance), storyAi,
+            { markPrice: Number(r.grade?.mark_price) || null }),
+          compare: { tv: tradeFor(r, "tv", r.tv_direction)?.pnl ?? null, coin: tradeFor(r, "coin", r.coin_direction)?.pnl ?? null },
+          rule: r.rule?.range != null ? { support: r.rule.support, resistance: r.rule.resistance, range: r.rule.range, window_hours: r.rule.window_hours, pump_dump: r.rule.pump_dump } : null,
+          diagnostic: getTradeDiagnostic({ time: r.moment, entry, rule: r.rule, story: storyAi, hedged: trade?.hedged ?? false, direction: r.direction }),
+        };
+      }),
     });
   } catch (error) {
     next(error);

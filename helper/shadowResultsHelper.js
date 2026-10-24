@@ -310,3 +310,43 @@ export const summarizeGrades = (rows, setting = "t10_tp1", scoreVersion = "v1") 
     buckets: buckets.map((b) => ({ label: b.label, sources: Object.fromEntries(SOURCES.map((s) => [s, finish(b.sources[s])])) })),
   };
 };
+
+/** Diagnostic tags for understanding trade failure and execution context */
+export const getTradeDiagnostic = ({ time, entry, rule, story, hedged, direction }) => {
+  const d = new Date(time);
+  const hour = d.getUTCHours();
+
+  // Market Session
+  let session = "Asian";
+  if (hour >= 22 || hour < 2) session = "Rollover";
+  else if (hour >= 7 && hour < 12) session = "London";
+  else if (hour >= 12 && hour < 17) session = "New York";
+  else if (hour >= 17 && hour < 22) session = "Late NY";
+
+  // Location relative to S/R
+  let location = null;
+  let posPct = null;
+  if (rule?.support != null && rule?.resistance != null && rule.resistance > rule.support && entry != null) {
+    posPct = Math.round(((entry - rule.support) / (rule.resistance - rule.support)) * 100);
+    if (posPct <= 25) location = `Floor (${posPct}%)`;
+    else if (posPct >= 75) location = `Ceiling (${posPct}%)`;
+    else location = `Mid-Chop (${posPct}%)`;
+  }
+
+  // Diagnostic reason
+  let reason = null;
+  if (story === "A") {
+    reason = "Clean TP (No Hedge)";
+  } else if (story === "B") {
+    reason = direction === "buy" ? "Support Breakdown" : "Resistance Breakout";
+    if (session === "Rollover") reason += " [Off-Hours]";
+  } else if (story === "C") {
+    reason = "Wick Sweep Reversal";
+  } else if (story === "X") {
+    reason = hedged ? "Hedged Timeout (8h)" : "Chop Timeout (Unhedged)";
+    if (session === "Rollover") reason += " [Off-Hours]";
+  }
+
+  return { session, location, pos_pct: posPct, reason };
+};
+
