@@ -8,6 +8,7 @@ import {
 import { summarizeGrades, scoreboard, referenceTrade, naturalTrade, strategyComparison, dailyBreakdown, tradingCost, REFERENCE_RISK, MAX_AUTO_LOT, getTradeDiagnostic } from "../helper/shadowResultsHelper.js";
 import { getVolatility } from "../helper/marketContextHelper.js";
 import { loadCandles } from "../helper/candleRecorder.js";
+import { refreshTradingCost } from "../helper/tradingCostHelper.js";
 
 /**
  * Get market signal forecast for a symbol and timeframe
