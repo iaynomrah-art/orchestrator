@@ -9,7 +9,9 @@ export const TRIGGERS = [0.1, 0.15];
 const WEEKEND_GAP_SEC = 3 * 3600;
 
 /** One direction at one setting. Up candle O->L->H->C, down candle O->H->L->C. */
-export const walk = (candles, i0, direction, slD, tpD, trigger, horizonSec) => {
+// carryWeekend: keep a trade open over weekend gaps (a jump fills the hedge at the open),
+// for replays that hold every trade until its SL or TP instead of grading the first hours
+export const walk = (candles, i0, direction, slD, tpD, trigger, horizonSec, { carryWeekend = false } = {}) => {
   const s = direction === "buy" ? 1 : -1;
   const p0 = candles.open[i0];
   const tp = p0 + s * tpD, sl = p0 - s * slD, trig = p0 - s * trigger * slD;
@@ -17,7 +19,7 @@ export const walk = (candles, i0, direction, slD, tpD, trigger, horizonSec) => {
   const bar = candles.time.length > i0 + 1 ? candles.time[i0 + 1] - candles.time[i0] : 60;
   let hedged = false, worst = 0, hedge = null;
   for (let j = i0; j < candles.time.length && candles.time[j] < end; j++) {
-    if (j > i0 && candles.time[j] - candles.time[j - 1] > WEEKEND_GAP_SEC) break;   // not carried over a weekend
+    if (!carryWeekend && j > i0 && candles.time[j] - candles.time[j - 1] > WEEKEND_GAP_SEC) break;   // not carried over a weekend
     const o = candles.open[j], h = candles.high[j], l = candles.low[j], c = candles.close[j];
     const path = c >= o ? [o, l, h, c] : [o, h, l, c];
     for (let k = 0; k < path.length; k++) {

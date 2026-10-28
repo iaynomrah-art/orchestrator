@@ -2,10 +2,9 @@ import cron from "node-cron";
 import { generateSignal, isSignalInProgress } from "../helper/signalHelper.js";
 import { goldMarketOpen, isRollover } from "../helper/marketContextHelper.js";
 
-// Shadow mode: one signal an hour, recorded but never traded. A local server
-// grades each one 8 hours later, so we learn how often the AI hits TP without
-// the delayed hedge opening, next to the TradingView rating and a coin flip.
-// Off unless SHADOW_SIGNALS_ENABLED=true.
+// Shadow mode: a signal at each of the S/R rule's two times, recorded but never
+// traded. cron/gradeSignals.js grades it once it hits SL or TP, next to the
+// TradingView rating and a coin flip. Off unless SHADOW_SIGNALS_ENABLED=true.
 let running = false;
 
 async function makeShadowSignal() {
@@ -34,7 +33,7 @@ async function makeShadowSignal() {
   }
 }
 
-// Five past every hour
-cron.schedule("5 * * * *", makeShadowSignal, { timezone: "UTC" });
+// The rule's two times, Philippine Time, Monday to Friday: 9:00 AM (01:00 UTC) and 8:00 PM (12:00 UTC)
+cron.schedule("0 9,20 * * 1-5", makeShadowSignal, { timezone: "Asia/Manila" });
 
 export { makeShadowSignal };

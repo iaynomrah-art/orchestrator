@@ -1,0 +1,501 @@
+{
+  "generated_at": "2026-10-27T12:59:26.553Z",
+  "source": {
+    "file": "XAUUSD.r_M5.csv",
+    "from": "2025-09-04T12:10:00.000Z",
+    "to": "2026-10-22T09:40:00.000Z",
+    "candles": 80000,
+    "hours": 6661
+  },
+  "rule": {
+    "name": "S/R bounce, x12% budget ($40 stop), 12h levels, 25% zone",
+    "lot": 0.03,
+    "sl_distance": 40,
+    "live_pht_hour": 9,
+    "coin_runs": 300
+  },
+  "hourly": [
+    {
+      "pht_hour": 0,
+      "utc_hour": 16,
+      "avg_move": 21.97,
+      "samples": 292,
+      "bounce": {
+        "trades": 10,
+        "clean": 0,
+        "pnl": -196.93,
+        "beats_pct": 97
+      }
+    },
+    {
+      "pht_hour": 1,
+      "utc_hour": 17,
+      "avg_move": 18.57,
+      "samples": 290,
+      "bounce": {
+        "trades": 9,
+        "clean": 2,
+        "pnl": 68.48,
+        "beats_pct": 87
+      }
+    },
+    {
+      "pht_hour": 2,
+      "utc_hour": 18,
+      "avg_move": 19.59,
+      "samples": 286,
+      "bounce": {
+        "trades": 12,
+        "clean": 1,
+        "pnl": -151.43,
+        "beats_pct": 19
+      }
+    },
+    {
+      "pht_hour": 3,
+      "utc_hour": 19,
+      "avg_move": 18.13,
+      "samples": 276,
+      "bounce": {
+        "trades": 15,
+        "clean": 1,
+        "pnl": -206.12,
+        "beats_pct": 76
+      }
+    },
+    {
+      "pht_hour": 4,
+      "utc_hour": 20,
+      "avg_move": 15.28,
+      "samples": 280,
+      "bounce": {
+        "trades": 21,
+        "clean": 1,
+        "pnl": -328.44,
+        "beats_pct": 6
+      }
+    },
+    {
+      "pht_hour": 5,
+      "utc_hour": 21,
+      "avg_move": 15.91,
+      "samples": 83,
+      "bounce": {
+        "trades": 5,
+        "clean": 1,
+        "pnl": 18.12,
+        "beats_pct": 70
+      }
+    },
+    {
+      "pht_hour": 6,
+      "utc_hour": 22,
+      "avg_move": 18.62,
+      "samples": 202,
+      "bounce": {
+        "trades": 22,
+        "clean": 0,
+        "pnl": -307.68,
+        "beats_pct": 4
+      }
+    },
+    {
+      "pht_hour": 7,
+      "utc_hour": 23,
+      "avg_move": 20.43,
+      "samples": 290,
+      "bounce": {
+        "trades": 34,
+        "clean": 1,
+        "pnl": -451.98,
+        "beats_pct": 2
+      }
+    },
+    {
+      "pht_hour": 8,
+      "utc_hour": 0,
+      "avg_move": 22.63,
+      "samples": 291,
+      "bounce": {
+        "trades": 32,
+        "clean": 5,
+        "pnl": -8.66,
+        "beats_pct": 50
+      }
+    },
+    {
+      "pht_hour": 9,
+      "utc_hour": 1,
+      "avg_move": 28.15,
+      "samples": 292,
+      "bounce": {
+        "trades": 39,
+        "clean": 10,
+        "pnl": 522.72,
+        "beats_pct": 95
+      }
+    },
+    {
+      "pht_hour": 10,
+      "utc_hour": 2,
+      "avg_move": 20.92,
+      "samples": 292,
+      "bounce": {
+        "trades": 27,
+        "clean": 1,
+        "pnl": -362.88,
+        "beats_pct": 14
+      }
+    },
+    {
+      "pht_hour": 11,
+      "utc_hour": 3,
+      "avg_move": 15.69,
+      "samples": 292,
+      "bounce": {
+        "trades": 28,
+        "clean": 5,
+        "pnl": -26.08,
+        "beats_pct": 81
+      }
+    },
+    {
+      "pht_hour": 12,
+      "utc_hour": 4,
+      "avg_move": 13.22,
+      "samples": 292,
+      "bounce": {
+        "trades": 28,
+        "clean": 4,
+        "pnl": -104.76,
+        "beats_pct": 57
+      }
+    },
+    {
+      "pht_hour": 13,
+      "utc_hour": 5,
+      "avg_move": 21.36,
+      "samples": 291,
+      "bounce": {
+        "trades": 38,
+        "clean": 5,
+        "pnl": -124.93,
+        "beats_pct": 38
+      }
+    },
+    {
+      "pht_hour": 14,
+      "utc_hour": 6,
+      "avg_move": 19.84,
+      "samples": 291,
+      "bounce": {
+        "trades": 21,
+        "clean": 3,
+        "pnl": -38.41,
+        "beats_pct": 62
+      }
+    },
+    {
+      "pht_hour": 15,
+      "utc_hour": 7,
+      "avg_move": 18.05,
+      "samples": 290,
+      "bounce": {
+        "trades": 29,
+        "clean": 3,
+        "pnl": -151.26,
+        "beats_pct": 30
+      }
+    },
+    {
+      "pht_hour": 16,
+      "utc_hour": 8,
+      "avg_move": 19.11,
+      "samples": 291,
+      "bounce": {
+        "trades": 40,
+        "clean": 5,
+        "pnl": -187.63,
+        "beats_pct": 26
+      }
+    },
+    {
+      "pht_hour": 17,
+      "utc_hour": 9,
+      "avg_move": 17.24,
+      "samples": 290,
+      "bounce": {
+        "trades": 32,
+        "clean": 3,
+        "pnl": -261.22,
+        "beats_pct": 66
+      }
+    },
+    {
+      "pht_hour": 18,
+      "utc_hour": 10,
+      "avg_move": 16.46,
+      "samples": 291,
+      "bounce": {
+        "trades": 37,
+        "clean": 6,
+        "pnl": 27.86,
+        "beats_pct": 73
+      }
+    },
+    {
+      "pht_hour": 19,
+      "utc_hour": 11,
+      "avg_move": 18.98,
+      "samples": 291,
+      "bounce": {
+        "trades": 27,
+        "clean": 4,
+        "pnl": -45.68,
+        "beats_pct": 89
+      }
+    },
+    {
+      "pht_hour": 20,
+      "utc_hour": 12,
+      "avg_move": 25.3,
+      "samples": 292,
+      "bounce": {
+        "trades": 30,
+        "clean": 8,
+        "pnl": 307.77,
+        "beats_pct": 94
+      }
+    },
+    {
+      "pht_hour": 21,
+      "utc_hour": 13,
+      "avg_move": 30.2,
+      "samples": 292,
+      "bounce": {
+        "trades": 22,
+        "clean": 4,
+        "pnl": 20.08,
+        "beats_pct": 55
+      }
+    },
+    {
+      "pht_hour": 22,
+      "utc_hour": 14,
+      "avg_move": 30.08,
+      "samples": 292,
+      "bounce": {
+        "trades": 23,
+        "clean": 3,
+        "pnl": -84.1,
+        "beats_pct": 51
+      }
+    },
+    {
+      "pht_hour": 23,
+      "utc_hour": 15,
+      "avg_move": 27.29,
+      "samples": 292,
+      "bounce": {
+        "trades": 17,
+        "clean": 3,
+        "pnl": 15.94,
+        "beats_pct": 49
+      }
+    }
+  ],
+  "weekday": [
+    {
+      "day": "Mon",
+      "avg_move": 22.8,
+      "samples": 1041,
+      "nine_am": {
+        "trades": 0,
+        "clean": 0,
+        "pnl": 0
+      }
+    },
+    {
+      "day": "Tue",
+      "avg_move": 19.8,
+      "samples": 1339,
+      "nine_am": {
+        "trades": 10,
+        "clean": 3,
+        "pnl": 190.11
+      }
+    },
+    {
+      "day": "Wed",
+      "avg_move": 19.51,
+      "samples": 1352,
+      "nine_am": {
+        "trades": 10,
+        "clean": 2,
+        "pnl": 92.79
+      }
+    },
+    {
+      "day": "Thu",
+      "avg_move": 21.47,
+      "samples": 1315,
+      "nine_am": {
+        "trades": 8,
+        "clean": 2,
+        "pnl": 94.47
+      }
+    },
+    {
+      "day": "Fri",
+      "avg_move": 20.95,
+      "samples": 1320,
+      "nine_am": {
+        "trades": 11,
+        "clean": 3,
+        "pnl": 145.35
+      }
+    }
+  ],
+  "monthly": [
+    {
+      "month": "2025-09",
+      "avg_move": 10.22,
+      "samples": 411,
+      "nine_am": {
+        "trades": 5,
+        "clean": 0,
+        "pnl": -76.38
+      }
+    },
+    {
+      "month": "2025-10",
+      "avg_move": 20.77,
+      "samples": 527,
+      "nine_am": {
+        "trades": 2,
+        "clean": 2,
+        "pnl": 182.52
+      }
+    },
+    {
+      "month": "2025-11",
+      "avg_move": 16.27,
+      "samples": 453,
+      "nine_am": {
+        "trades": 2,
+        "clean": 0,
+        "pnl": -23.46
+      }
+    },
+    {
+      "month": "2025-12",
+      "avg_move": 15.26,
+      "samples": 501,
+      "nine_am": {
+        "trades": 5,
+        "clean": 1,
+        "pnl": 25.38
+      }
+    },
+    {
+      "month": "2026-01",
+      "avg_move": 27.3,
+      "samples": 481,
+      "nine_am": {
+        "trades": 0,
+        "clean": 0,
+        "pnl": 0
+      }
+    },
+    {
+      "month": "2026-02",
+      "avg_move": 35.02,
+      "samples": 457,
+      "nine_am": {
+        "trades": 2,
+        "clean": 1,
+        "pnl": 92.7
+      }
+    },
+    {
+      "month": "2026-03",
+      "avg_move": 35.13,
+      "samples": 506,
+      "nine_am": {
+        "trades": 1,
+        "clean": 0,
+        "pnl": -15.42
+      }
+    },
+    {
+      "month": "2026-04",
+      "avg_move": 21.85,
+      "samples": 483,
+      "nine_am": {
+        "trades": 1,
+        "clean": 0,
+        "pnl": -14.37
+      }
+    },
+    {
+      "month": "2026-05",
+      "avg_move": 19.08,
+      "samples": 477,
+      "nine_am": {
+        "trades": 4,
+        "clean": 0,
+        "pnl": -53.22
+      }
+    },
+    {
+      "month": "2026-06",
+      "avg_move": 20.51,
+      "samples": 502,
+      "nine_am": {
+        "trades": 2,
+        "clean": 1,
+        "pnl": 80.25
+      }
+    },
+    {
+      "month": "2026-07",
+      "avg_move": 16.03,
+      "samples": 523,
+      "nine_am": {
+        "trades": 6,
+        "clean": 0,
+        "pnl": -85.56
+      }
+    },
+    {
+      "month": "2026-08",
+      "avg_move": 18.29,
+      "samples": 483,
+      "nine_am": {
+        "trades": 2,
+        "clean": 2,
+        "pnl": 172.2
+      }
+    },
+    {
+      "month": "2026-09",
+      "avg_move": 17.66,
+      "samples": 503,
+      "nine_am": {
+        "trades": 4,
+        "clean": 2,
+        "pnl": 166.95
+      }
+    },
+    {
+      "month": "2026-10",
+      "avg_move": 14.07,
+      "samples": 354,
+      "nine_am": {
+        "trades": 3,
+        "clean": 1,
+        "pnl": 71.13
+      }
+    }
+  ]
+}

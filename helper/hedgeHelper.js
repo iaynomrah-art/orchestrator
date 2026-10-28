@@ -2,6 +2,8 @@
 // delayed hedge (primary alone, secondary on standby) or the natural hedge
 // (both legs together), and sizes the hedge leg.
 
+// Default trigger, as a fraction of the primary's SL distance. A signal from the S/R rule
+// carries its own (inputs.trigger: $0.50 past the S/R level, capped at a $20 loss).
 export const HEDGE_TRIGGER_PCT = 0.10;
 // Hedge lot = primary lot. Both outcomes once hedged cost the trigger loss (10% of SL):
 // at the primary's SL the hedge has made 90% of it back, and on a reversal to the
@@ -28,7 +30,7 @@ export const planDelayedHedge = ({ enabled, minScore, signal, events, operations
   const score = Number(signal?.confidence);
   if (!testMode) {
     if (!signal) return natural("No AI signal linked to this pair");
-    if (signal.source !== "ai") return natural("Signal came from the technicals fallback, not the AI");
+    if (signal.source !== "ai" && signal.source !== "sr-tv-synergy" && signal.source !== "sr-tv-combined") return natural("Signal came from an untrusted fallback, not the validated model");
     if (!Number.isFinite(score) || score < minScore) return natural(`Signal score ${signal.confidence ?? "n/a"} is below ${minScore}`);
     // News or rollover at signal time: stop orders slip and whipsaws are likelier
     const blocks = signal.inputs?.hedge_block;
@@ -46,11 +48,14 @@ export const planDelayedHedge = ({ enabled, minScore, signal, events, operations
   const tp = Number(primary.take_profit);
   if (!(lot > 0 && sl > 0 && tp > 0)) return natural("Primary lot, SL and TP must all be set");
 
+  const signalTrigger = Number(signal?.inputs?.trigger);
+  const triggerPct = !testMode && signalTrigger > 0 && signalTrigger < 1 ? signalTrigger : HEDGE_TRIGGER_PCT;
+
   const hedgeLot = Math.round(lot * HEDGE_MULTIPLIER * 100) / 100;
   const scale = hedgeLot / lot;
   // Hedge opens at -trigger; its SL sits at the primary's TP and its TP at the primary's SL
-  const hedgeRisk = Math.round(scale * (tp + HEDGE_TRIGGER_PCT * sl) * 100) / 100;
-  const hedgeReward = Math.round(scale * (1 - HEDGE_TRIGGER_PCT) * sl * 100) / 100;
+  const hedgeRisk = Math.round(scale * (tp + triggerPct * sl) * 100) / 100;
+  const hedgeReward = Math.round(scale * (1 - triggerPct) * sl * 100) / 100;
 
   const fits = (limit, need) => Number.isFinite(Number(limit)) && Number(limit) >= need;
   let swap = false;
@@ -67,6 +72,7 @@ export const planDelayedHedge = ({ enabled, minScore, signal, events, operations
     strategy: "delayed_hedge",
     reason: testMode ? "Test mode: AI score check skipped" : `Signal score ${score}`,
     swap,
+    trigger_pct: triggerPct,
     hedge: { order_amount: hedgeLot, stop_loss: hedgeRisk, take_profit: hedgeReward },
   };
 };

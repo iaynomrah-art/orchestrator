@@ -330,6 +330,7 @@ export const pairStrategyAction = async (req, res, next) => {
       score,
       swap: Boolean(plan.swap),
       hedge: plan.hedge ?? null,
+      trigger_pct: plan.trigger_pct ?? null,
       test_mode_available: testModeAvailable(),
     });
   } catch (error) {
@@ -432,7 +433,7 @@ export const pairUnitsAction = async (req, res, next) => {
         ...(linkedSignalId ? { signal_id: linkedSignalId } : {}),
         // Natural pairs send nothing new, so they keep working before the delayed hedge migration has run
         ...(plan.strategy === "delayed_hedge"
-          ? { strategy: "delayed_hedge", hedge_status: "standby", hedge_trigger_pct: HEDGE_TRIGGER_PCT }
+          ? { strategy: "delayed_hedge", hedge_status: "standby", hedge_trigger_pct: plan.trigger_pct ?? HEDGE_TRIGGER_PCT }
           : {}),
       })
       .select();

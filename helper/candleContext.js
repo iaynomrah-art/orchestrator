@@ -39,13 +39,45 @@ export const summarizeCandles = (bars) => {
   }
   const hourAgo = bars.find((b) => b.time >= last.time - 3600) || first;
   const r2 = (x) => Math.round(x * 100) / 100;
+  const rangePos = high > low ? Math.round(((last.close - low) / (high - low)) * 100) : 50;
+
+  // Real Candlestick Price Action Analysis at Boundaries (wicks & momentum)
+  const prev = bars.length >= 2 ? bars[bars.length - 2] : last;
+  const candleRange = Math.max(0.01, last.high - last.low);
+  const lowerWick = Math.min(last.open, last.close) - last.low;
+  const upperWick = last.high - Math.max(last.open, last.close);
+  const lowerWickPct = Math.round((lowerWick / candleRange) * 100);
+  const upperWickPct = Math.round((upperWick / candleRange) * 100);
+
+  let boundaryAction = "neutral";
+  if (rangePos <= 25) {
+    if (lowerWickPct >= 35 || (last.close > last.open && prev.close < prev.open)) {
+      boundaryAction = "support_bounce_wick";
+    } else if (structure.includes("downtrend") || (last.close < last.open && lowerWickPct < 20)) {
+      boundaryAction = "breakdown_momentum";
+    } else {
+      boundaryAction = "testing_support";
+    }
+  } else if (rangePos >= 75) {
+    if (upperWickPct >= 35 || (last.close < last.open && prev.close > prev.open)) {
+      boundaryAction = "resistance_rejection_wick";
+    } else if (structure.includes("uptrend") || (last.close > last.open && upperWickPct < 20)) {
+      boundaryAction = "breakout_momentum";
+    } else {
+      boundaryAction = "testing_resistance";
+    }
+  }
+
   return {
     from: r2(first.open), to: r2(last.close), change: r2(last.close - first.open),
     bullish_pct: Math.round((bullish / bars.length) * 100),
     structure,
     last_hour_change: r2(last.close - hourAgo.open),
     range_low: r2(low), range_high: r2(high),
-    range_position_pct: high > low ? Math.round(((last.close - low) / (high - low)) * 100) : 50,
+    range_position_pct: rangePos,
+    boundary_action: boundaryAction,
+    lower_wick_pct: lowerWickPct,
+    upper_wick_pct: upperWickPct,
   };
 };
 
@@ -54,16 +86,27 @@ const signed = (x) => `${x >= 0 ? "+" : "-"}$${Math.abs(x).toFixed(2)}`;
 export const describeCandles = (s) => {
   if (!s) return [];
   const span = Math.round((s.range_high - s.range_low) * 100) / 100;
-  const zone = s.range_position_pct <= 25
-    ? "NEAR SUPPORT (Range Floor - Bounce Zone)"
-    : s.range_position_pct >= 75
-      ? "NEAR RESISTANCE (Range Ceiling - Rejection Zone)"
-      : "MIDDLE OF RANGE (Chop Zone)";
+  
+  let zone = "MIDDLE OF RANGE (Consolidation)";
+  if (s.boundary_action === "support_bounce_wick") {
+    zone = "AT SUPPORT FLOOR: Buyer rejection wick detected (Defending floor)";
+  } else if (s.boundary_action === "breakdown_momentum") {
+    zone = "AT SUPPORT FLOOR: Bearish breakdown momentum (High risk of breaking lower)";
+  } else if (s.boundary_action === "resistance_rejection_wick") {
+    zone = "AT RESISTANCE CEILING: Seller rejection wick detected (Defending ceiling)";
+  } else if (s.boundary_action === "breakout_momentum") {
+    zone = "AT RESISTANCE CEILING: Bullish breakout momentum (High risk of breaking higher)";
+  } else if (s.range_position_pct <= 25) {
+    zone = "TESTING SUPPORT (Near range floor)";
+  } else if (s.range_position_pct >= 75) {
+    zone = "TESTING RESISTANCE (Near range ceiling)";
+  }
+
   return [
     `Price moved ${signed(s.change)} (${s.from.toFixed(2)} -> ${s.to.toFixed(2)}); ${s.bullish_pct}% of candles were bullish`,
-    `Structure: ${s.structure}`,
-    `6-Hour Range: Support (Floor) = $${s.range_low.toFixed(2)}, Resistance (Ceiling) = $${s.range_high.toFixed(2)} (Range Span: $${span.toFixed(2)})`,
-    `Current Price Location: ${s.range_position_pct}% of the range [${zone}]`,
+    `Market Structure: ${s.structure.toUpperCase()}`,
+    `6-Hour Range: Support Floor = $${s.range_low.toFixed(2)}, Resistance Ceiling = $${s.range_high.toFixed(2)} (Span: $${span.toFixed(2)})`,
+    `Current Price Location: ${s.range_position_pct}% of range [${zone}]`,
     `Last hour move: ${signed(s.last_hour_change)}`,
   ];
 };
