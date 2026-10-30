@@ -603,6 +603,10 @@ export const pairUnitsAction = async (req, res, next) => {
   }
 };
 
+// Local servers hold every automated close until the position is 125s old
+// (GFT voids profit on shorter trades), so close commands can take that long
+const CLOSE_WITH_HOLD_TIMEOUT_MS = 180000;
+
 const isCloseOrTerminateOperation = (op) => {
   const o = String(op || "").toLowerCase();
   return o.startsWith("close") || o.startsWith("trade-terminator");
@@ -621,7 +625,8 @@ const compensateClose = async (unitId, event, originalPayload, role) => {
   const closePayload = { ...originalPayload, operation: closeOperation };
 
   try {
-    await broadcastAndWait(unitId, event, closePayload, 30000);
+    // The local close waits out the 125s minimum hold if the leg is in profit
+    await broadcastAndWait(unitId, event, closePayload, CLOSE_WITH_HOLD_TIMEOUT_MS);
     console.log(`Compensation close sent for ${role} leg on unit ${unitId}`);
   } catch (e) {
     console.error(`Compensation close FAILED for ${role} leg on unit ${unitId}: ${e.message}`);
@@ -754,6 +759,8 @@ const PAIR_EXIT_CHANNEL = "pair-exit";
 const PAIR_EXIT_EVENT = "exit";
 const FORCE_CLOSE_SIGNAL = "force_close";
 const isLegDone = (status) => status === "completed" || status === "close_failed";
+// Terminator got the signal but is waiting out the minimum hold before it closes
+const isLegHolding = (status) => status === "holding";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Same REST broadcast the local workers use for exit signals — no channel join needed. */
@@ -799,8 +806,11 @@ const readLegStatuses = async (pairId) => {
 export const forceClosePairAction = async (req, res, next) => {
   const {
     pairId, unit1Id, unit2Id, p1Event, p1Payload, p2Event, p2Payload,
-    terminatorWaitMs = 30000, closeTimeoutMs = 60000,
+    terminatorWaitMs = 30000, closeTimeoutMs = CLOSE_WITH_HOLD_TIMEOUT_MS,
   } = req.body || {};
+  // Set once a 202 went out because a leg is waiting out the minimum hold;
+  // the rest then runs in the background and only logs its outcome
+  let responded = false;
 
   try {
     if (!pairId) {
@@ -825,10 +835,23 @@ export const forceClosePairAction = async (req, res, next) => {
       throw new BadRequestError(`Pair ${pairId} not found`);
     }
 
-    // 2. Wait for the terminators to report each leg closed (or failed)
+    // 2. Wait for the terminators to report each leg closed (or failed). A leg that
+    // reports "holding" is alive but closes only once the trade is 125s old.
     let statuses = await readLegStatuses(pairId);
-    const deadline = Date.now() + terminatorWaitMs;
-    while (Date.now() < deadline && !(isLegDone(statuses.primary) && isLegDone(statuses.secondary))) {
+    const started = Date.now();
+    let sawHolding = false;
+    while (!(isLegDone(statuses.primary) && isLegDone(statuses.secondary))) {
+      if (isLegHolding(statuses.primary) || isLegHolding(statuses.secondary)) sawHolding = true;
+      if (sawHolding && !responded) {
+        // Don't keep the dashboard request open for up to two minutes
+        responded = true;
+        res.status(202).json({
+          success: true,
+          holding: true,
+          message: "Close signal received — the legs close once the trade is 125s old (minimum hold). Watch the trade for the result.",
+        });
+      }
+      if (Date.now() - started >= (sawHolding ? CLOSE_WITH_HOLD_TIMEOUT_MS : terminatorWaitMs)) break;
       await sleep(500);
       statuses = await readLegStatuses(pairId);
     }
@@ -879,8 +902,15 @@ export const forceClosePairAction = async (req, res, next) => {
       console.error(`[forceClosePair] Failed to finalize pair ${pairId}:`, finalError.message);
     }
 
+    const describe = (o) => (o.closed ? "closed" : `NOT closed (${o.reason || o.status})`);
+    if (responded) {
+      // The dashboard already got its 202; a close_failed leg shows there as NEEDS ATTENTION
+      const log = outcome.primary.closed && outcome.secondary.closed ? console.log : console.error;
+      log(`[forceClosePair] Pair ${pairId} after minimum hold — primary ${describe(outcome.primary)}, secondary ${describe(outcome.secondary)}`);
+      return;
+    }
+
     if (!outcome.primary.closed || !outcome.secondary.closed) {
-      const describe = (o) => (o.closed ? "closed" : `NOT closed (${o.reason || o.status})`);
       return res.status(502).json({
         success: false,
         message: `Force close incomplete — primary ${describe(outcome.primary)}, secondary ${describe(outcome.secondary)}. Check the open position manually.`,
@@ -894,6 +924,10 @@ export const forceClosePairAction = async (req, res, next) => {
       ...outcome,
     });
   } catch (error) {
+    if (responded) {
+      console.error(`[forceClosePair] Background finish failed for pair ${pairId}:`, error.message);
+      return;
+    }
     next(error);
   }
 };

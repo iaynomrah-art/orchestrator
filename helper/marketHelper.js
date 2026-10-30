@@ -213,11 +213,17 @@ DECISION LOGIC (Follow these rules strictly):
 3. NEWS IMPACT:
 - Verify headlines do not contradict your directional verdict.
 
+4. REASONING REQUIREMENTS (Simple & Detailed):
+- Sentence 1 (Setup & Level): State the current market structure and specific price level (e.g. bounce off Support floor at $X, breakout above 200 SMA at $Y, or rejection at Resistance ceiling at $Z).
+- Sentence 2 (Momentum & Objective): State momentum confirmation and target level (e.g. targeting resistance ceiling with defined risk).
+- DO NOT use generic meta-language like "the 1 hour micro trend indicates", "the latest headlines do not provide enough information to override", or "takes precedence". Speak with direct institutional clarity.
+- Keep the reasoning 100% technical (price action, support/resistance, 200 SMA). NEVER mention news, headlines, or economic data in the reasoning.
+
 Respond strictly in JSON format matching this exact schema. Do not output markdown code blocks, just the raw JSON:
 {
   "verdict": "BUY", // MUST BE EXACTLY ONE WORD: either "BUY" or "SELL". No sentences.
   "news_impact": "neutral", // MUST BE EXACTLY ONE WORD: "supports", "against" or "neutral".
-  "reasoning": "Short 2-sentence explanation citing market structure and price action."
+  "reasoning": "Price confirmed support above $4,170 with a bullish rejection wick. Momentum remains positive above the 200 SMA, targeting continuation toward the $4,195 resistance ceiling."
 }
 `;
 
